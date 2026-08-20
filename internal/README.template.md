@@ -1,9 +1,9 @@
 <p>
-  <a href="https://www.aihero.dev/ai-coding-dictionary">
+  <a href="https://aicodingdictionary.com">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://res.cloudinary.com/total-typescript/image/upload/v1777878285/dictionary-dark_2x.png">
-      <source media="(prefers-color-scheme: light)" srcset="https://res.cloudinary.com/total-typescript/image/upload/v1777878285/dictionary-light_2x.png">
-      <img alt="AI Coding Dictionary" src="https://res.cloudinary.com/total-typescript/image/upload/v1777878285/dictionary-light_2x.png" width="369">
+      <source media="(prefers-color-scheme: dark)" srcset="https://res.cloudinary.com/total-typescript/image/upload/v1782821584/dictionary-dark.png">
+      <source media="(prefers-color-scheme: light)" srcset="https://res.cloudinary.com/total-typescript/image/upload/v1782821584/dictionary-light.png">
+      <img alt="AI Coding Dictionary" src="https://res.cloudinary.com/total-typescript/image/upload/v1782821584/dictionary-light.png" width="369">
     </picture>
   </a>
 </p>
@@ -21,6 +21,11 @@ Why does context degrade? Why is the bill so high? Why does the same prompt beha
 Each has a clean answer, once someone tells you the words to use.
 
 That's what this dictionary is for. **The vocabulary of AI coding, translated into plain English**.
+
+> **Leia em português 🇧🇷** — este dicionário também existe em português do Brasil:
+> **[Dicionário de Programação com IA](https://mtbasso.github.io/dictionary-of-ai-coding/pt-BR/)**.
+> Ambas as versões estão disponíveis em **[mtbasso.github.io/dictionary-of-ai-coding](https://mtbasso.github.io/dictionary-of-ai-coding/)**,
+> onde o botão de idioma no topo alterna entre inglês e português.
 
 **Want more than the vocabulary?** Join 62,000+ developers at **[aihero.dev/newsletter](https://www.aihero.dev/s/dictionary-newsletter)** for my latest skills, thinking on AI engineering, and the resources that'll keep you ahead of the curve.
 

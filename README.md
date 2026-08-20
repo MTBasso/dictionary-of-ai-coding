@@ -28,6 +28,11 @@ Each has a clean answer, once someone tells you the words to use.
 
 That's what this dictionary is for. **The vocabulary of AI coding, translated into plain English**.
 
+> **Leia em português 🇧🇷** — este dicionário também existe em português do Brasil:
+> **[Dicionário de Programação com IA](https://mtbasso.github.io/dictionary-of-ai-coding/pt-BR/)**.
+> Ambas as versões estão disponíveis em **[mtbasso.github.io/dictionary-of-ai-coding](https://mtbasso.github.io/dictionary-of-ai-coding/)**,
+> onde o botão de idioma no topo alterna entre inglês e português.
+
 **Want more than the vocabulary?** Join 62,000+ developers at **[aihero.dev/newsletter](https://www.aihero.dev/s/dictionary-newsletter)** for my latest skills, thinking on AI engineering, and the resources that'll keep you ahead of the curve.
 
 ---
