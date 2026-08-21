@@ -59,6 +59,13 @@ export type Locale = {
     recenter: string;
     /** Shown to readers without JavaScript. */
     noscript: string;
+    /** Header byline, followed by a link to Matt Pocock. */
+    creditBy: string;
+    /** Footer credit. %matt%, %site% and %github% are replaced with links. */
+    creditFooter: string;
+    /** Shown once after an automatic switch to this language. */
+    switched: string;
+    switchedAction: string;
   };
 };
 
@@ -109,6 +116,11 @@ export const LOCALES: Locale[] = [
       recenter: "Recenter",
       noscript:
         "This view needs JavaScript. The full dictionary is readable as a single page in the Reference.",
+      creditBy: "Dictionary by",
+      creditFooter:
+        "Every definition here is written by %matt%, whose original lives at %site%. This bilingual, explorable build is on %github%.",
+      switched: "Showing English, matching your browser.",
+      switchedAction: "Stay in English",
     },
   },
   {
@@ -153,6 +165,11 @@ export const LOCALES: Locale[] = [
       recenter: "Recentralizar",
       noscript:
         "Esta visualização precisa de JavaScript. O dicionário completo pode ser lido em página única na Referência.",
+      creditBy: "Dicionário de",
+      creditFooter:
+        "Todas as definições daqui são escritas por %matt%, e o original está em %site%. Esta versão bilíngue e navegável está no %github%.",
+      switched: "Mostrando português, seguindo o idioma do seu navegador.",
+      switchedAction: "Continuar em português",
     },
   },
 ];

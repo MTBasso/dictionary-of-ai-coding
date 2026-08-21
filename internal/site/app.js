@@ -25,6 +25,30 @@
     themeBtn.setAttribute("aria-pressed", String(currentTheme() === "dark"));
   }
 
+  /* ---------- auto-switch notice ---------- */
+
+  // head.js may have redirected here from the English page. Say so once, and
+  // offer to make it stick, so the switch never feels like it just happened.
+  var notice = document.getElementById("switched");
+  if (notice) {
+    var why = null;
+    try {
+      why = sessionStorage.getItem("auto-locale");
+      sessionStorage.removeItem("auto-locale");
+    } catch (e) {}
+    if (why === "device") {
+      notice.hidden = false;
+      var ok = document.getElementById("switched-ok");
+      if (ok)
+        ok.addEventListener("click", function () {
+          try {
+            localStorage.setItem("locale", root.getAttribute("data-locale"));
+          } catch (e) {}
+          notice.hidden = true;
+        });
+    }
+  }
+
   /* ---------- language ---------- */
 
   // Entry names are shared across locales, so the fragment is still valid on

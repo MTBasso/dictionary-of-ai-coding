@@ -9,3 +9,5 @@ Why does context degrade? Why is the bill so high? Why does the same prompt beha
 Each has a clean answer, once someone tells you the words to use.
 
 That's what this dictionary is for. **The vocabulary of AI coding, translated into plain English**.
+
+> Every definition here is written by [Matt Pocock](https://aihero.dev). The original lives at [aicodingdictionary.com](https://aicodingdictionary.com) — this is a bilingual, explorable build of the same dictionary.

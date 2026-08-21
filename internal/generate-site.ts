@@ -313,6 +313,21 @@ function linkTo(here: string, target: string): string {
   return base + target || "./";
 }
 
+/** The <html> tag, carrying what head.js reads before first paint. */
+function htmlOpen(
+  locale: Locale,
+  other: Locale,
+  here: string,
+  otherHere: string
+): string {
+  return `<html lang="${locale.id}" dir="ltr" data-locale="${locale.id}" data-alt-locale="${other.id}" data-alt-href="${linkTo(here, otherHere)}">`;
+}
+
+/** "Dictionary by Matt Pocock" — shown on every page, next to the wordmark. */
+function byline(locale: Locale): string {
+  return `<span class="byline">${escapeHtml(locale.ui.creditBy)} <a href="https://aicodingdictionary.com">Matt Pocock</a></span>`;
+}
+
 function head(
   locale: Locale,
   other: Locale,
@@ -341,7 +356,10 @@ function header(
   extra: string
 ): string {
   return `<header class="site-header">
-  <a class="wordmark" href="${homeHref}">${escapeHtml(locale.title)}</a>
+  <div class="brand">
+    <a class="wordmark" href="${homeHref}">${escapeHtml(locale.title)}</a>
+    ${byline(locale)}
+  </div>
   <nav class="controls">
     ${extra}
     <a class="btn lang-btn" href="${linkTo(here, otherHere)}" data-target-locale="${other.id}" hreflang="${other.id}" lang="${other.id}" title="${escapeHtml(locale.langLabel(other.endonym))}">
@@ -355,9 +373,19 @@ function header(
 }
 
 function footer(locale: Locale): string {
+  const credit = escapeHtml(locale.ui.creditFooter)
+    .replace("%matt%", '<a href="https://aihero.dev">Matt Pocock</a>')
+    .replace(
+      "%site%",
+      '<a href="https://aicodingdictionary.com">aicodingdictionary.com</a>'
+    )
+    .replace(
+      "%github%",
+      '<a href="https://github.com/MTBasso/dictionary-of-ai-coding">GitHub</a>'
+    );
   return `<footer class="site-footer wrap">
   <p>${escapeHtml(locale.metaDescription)}</p>
-  <p><a href="https://github.com/MTBasso/dictionary-of-ai-coding">GitHub</a> · <a href="https://aicodingdictionary.com">aicodingdictionary.com</a></p>
+  <p class="credit">${credit}</p>
 </footer>`;
 }
 
@@ -389,13 +417,17 @@ function renderExplorer(
   const refLink = `<a class="btn" href="${referenceHref}">${escapeHtml(locale.ui.reference)}</a>`;
 
   return `<!doctype html>
-<html lang="${locale.id}" dir="ltr">
+${htmlOpen(locale, other, here, otherHere)}
 <head>
 ${head(locale, other, here, otherHere, locale.title)}
 </head>
 <body class="explorer-body">
 <div class="app">
 ${header(locale, other, here, otherHere, linkTo(here, here), refLink)}
+  <div id="switched" class="switched" hidden>
+    <span>${escapeHtml(locale.ui.switched)}</span>
+    <button type="button" id="switched-ok">${escapeHtml(locale.ui.switchedAction)}</button>
+  </div>
   <main class="explorer">
     <div class="web-pane">
       <canvas id="web"></canvas>
@@ -443,7 +475,7 @@ function renderReference(
   const explorerLink = `<a class="btn" href="${explorerHref}">${escapeHtml(locale.ui.explorer)}</a>`;
 
   return `<!doctype html>
-<html lang="${locale.id}" dir="ltr">
+${htmlOpen(locale, other, here, otherHere)}
 <head>
 ${head(locale, other, here, otherHere, locale.ui.referenceTitle)}
 </head>

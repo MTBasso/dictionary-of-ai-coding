@@ -435,8 +435,10 @@ body.explorer-body {
 
 .app {
   display: grid;
-  grid-template-rows: auto 1fr;
+  /* header, optional language notice, then the explorer fills the rest */
+  grid-template-rows: auto auto 1fr;
   height: 100dvh;
+  min-height: 0;
 }
 
 .explorer {
@@ -740,5 +742,77 @@ body.explorer-body {
 
   .web-pane {
     height: 52vh;
+  }
+}
+
+/* ---------- credit ---------- */
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.byline {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+
+.byline a {
+  color: var(--fg-muted);
+  text-decoration: none;
+  border-bottom: 1px solid var(--border-strong);
+}
+
+.byline a:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.site-footer .credit {
+  max-width: 46rem;
+}
+
+/* ---------- automatic language switch notice ---------- */
+
+.switched {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  font-size: 0.82rem;
+  color: var(--fg-muted);
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--border);
+}
+
+.switched[hidden] {
+  display: none;
+}
+
+.switched button {
+  font: inherit;
+  font-size: 0.78rem;
+  color: var(--fg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: 0.2rem 0.6rem;
+  cursor: pointer;
+}
+
+.switched button:hover {
+  border-color: var(--accent);
+}
+
+@media (max-width: 44rem) {
+  .byline {
+    display: none;
   }
 }
