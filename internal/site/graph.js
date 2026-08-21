@@ -19,7 +19,7 @@
   if (!DATA) return;
 
   var REVEAL_BATCH = 3;
-  var RING = 205; // distance between web rings, in world units
+  var RING = 172; // distance between web rings, in world units
   var UI = DATA.ui;
   var STORE_KEY = "dict-read-" + DATA.locale;
 
@@ -52,19 +52,14 @@
 
   /* ---------------- reveal ---------------- */
 
-  function place(node, depth) {
-    node.visible = true;
-    node.depth = depth;
-  }
-
   // --- orb-web layout -------------------------------------------------
   //
-  // Nodes are laid out on concentric rings around the seed. Order is breadth
-  // first from the hub, so the closer an entry is to where you started, the
-  // further in it sits; each ring is filled to the spacing its circumference
-  // allows before the next one begins. Rings are therefore "roughly how far
-  // out you are", not a strict hop count — the honest structure is in the
-  // threads, which are all real cross-references.
+  // Each ring holds a fixed number of evenly spaced slots. A node claims one
+  // slot the first time it is revealed and keeps it for good: the hub never
+  // moves, and everything already on screen stays exactly where you last saw
+  // it while new entries fill outward. Recomputing the whole layout on every
+  // reveal — which is what this replaced — reshuffled the web each time you
+  // read something, so nothing stayed where you had learned it was.
 
   function ringRadius(depth) {
     return depth * RING;
@@ -72,76 +67,83 @@
 
   // How many labelled nodes fit around a ring before they collide.
   function ringCapacity(depth) {
-    return Math.max(6, Math.floor((2 * Math.PI * ringRadius(depth)) / 108));
+    return Math.max(6, Math.floor((2 * Math.PI * ringRadius(depth)) / 96));
   }
 
   function fract(x) {
     return x - Math.floor(x);
   }
 
-  function relayout() {
-    var vis = visible();
-    if (!vis.length) return;
-    var root = byId[seed];
+  var slots = {}; // depth -> array of node ids, indexed by slot
 
-    // Breadth-first from the hub through the visible web.
-    var seen = {};
-    var order = [];
-    if (root.visible) {
-      seen[root.id] = true;
-      order.push(root);
-      for (var i = 0; i < order.length; i++) {
-        var u = order[i];
-        for (var k = 0; k < u.neighbors.length; k++) {
-          var v = byId[u.neighbors[k]];
-          if (v && v.visible && !seen[v.id]) {
-            seen[v.id] = true;
-            order.push(v);
-          }
+  function slotAngle(depth, index) {
+    var capacity = ringCapacity(depth);
+    // Alternate rings are offset so spokes stagger rather than line up.
+    var offset = depth % 2 ? Math.PI / capacity : 0;
+    return (index / capacity) * Math.PI * 2 + offset;
+  }
+
+  function angleGap(a, b) {
+    var d = Math.abs(a - b) % (Math.PI * 2);
+    return d > Math.PI ? Math.PI * 2 - d : d;
+  }
+
+  function positionFromSlot(node) {
+    node.angle = slotAngle(node.depth, node.slot);
+    // A little deterministic variation keeps it from looking like a dial.
+    var wobble = 0.95 + 0.11 * fract(node.index * 0.6180339887);
+    var r = ringRadius(node.depth) * wobble;
+    node.tx = Math.cos(node.angle) * r;
+    node.ty = Math.sin(node.angle) * r;
+  }
+
+  function claimSlot(node, depth, index) {
+    if (!slots[depth]) slots[depth] = [];
+    slots[depth][index] = node.id;
+    node.depth = depth;
+    node.slot = index;
+    positionFromSlot(node);
+  }
+
+  // Innermost ring with a free slot, taking the slot nearest the parent so
+  // related entries end up as neighbours on the web.
+  function assignSlot(node, parent) {
+    if (node.id === seed) {
+      node.depth = 0;
+      node.slot = 0;
+      node.angle = 0;
+      node.tx = 0;
+      node.ty = 0;
+      return;
+    }
+    var want = parent && parent.angle !== undefined ? parent.angle : 0;
+    for (var depth = 1; depth <= 14; depth++) {
+      var capacity = ringCapacity(depth);
+      if (!slots[depth]) slots[depth] = [];
+      var best = -1;
+      var bestGap = Infinity;
+      for (var i = 0; i < capacity; i++) {
+        if (slots[depth][i]) continue;
+        var gap = angleGap(slotAngle(depth, i), want);
+        if (gap < bestGap) {
+          bestGap = gap;
+          best = i;
         }
       }
-    }
-    // Anything not reachable from the hub still needs a place.
-    vis.forEach(function (n) {
-      if (!seen[n.id]) order.push(n);
-    });
-
-    root.depth = 0;
-    root.angle = 0;
-    root.tx = 0;
-    root.ty = 0;
-
-    var depth = 1;
-    var idx = 1; // order[0] is the hub
-    while (idx < order.length) {
-      var capacity = Math.min(ringCapacity(depth), order.length - idx);
-      var ring = order.slice(idx, idx + capacity);
-      // Alternate rings are offset so spokes stagger rather than line up.
-      var offset = depth % 2 ? Math.PI / capacity : 0;
-      for (var j = 0; j < ring.length; j++) {
-        var node = ring[j];
-        var angle = (j / ring.length) * Math.PI * 2 + offset;
-        // A little deterministic variation keeps it from looking like a dial.
-        var wobble = 0.94 + 0.13 * fract(node.index * 0.6180339887);
-        node.depth = depth;
-        node.angle = angle;
-        node.tx = Math.cos(angle) * ringRadius(depth) * wobble;
-        node.ty = Math.sin(angle) * ringRadius(depth) * wobble;
+      if (best >= 0) {
+        claimSlot(node, depth, best);
+        return;
       }
-      idx += capacity;
-      depth++;
     }
   }
 
   function reveal(node, near) {
     if (!node || node.visible) return false;
     node.visible = true;
-    node.depth = near ? near.depth + 1 : 0;
+    assignSlot(node, near);
     // Spawn on the parent so it visibly travels out to its place on the web.
-    node.x = near ? near.x : 0;
-    node.y = near ? near.y : 0;
-    node.tx = node.x;
-    node.ty = node.y;
+    node.x = near ? near.x : node.tx;
+    node.y = near ? near.y : node.ty;
     return true;
   }
 
@@ -152,7 +154,6 @@
       node.shown++;
       if (reveal(next, node)) added++;
     }
-    if (added) relayout();
     return added;
   }
 
@@ -195,21 +196,21 @@
             .map(function (n) {
               return [n.id, n.shown];
             }),
-          seen: nodes
+          // Slot per visible node, so a reload rebuilds the identical web.
+          pos: nodes
             .filter(function (n) {
               return n.visible;
             })
             .map(function (n) {
-              return n.id;
+              return [n.id, n.depth, n.slot];
             }),
         })
       );
     } catch (e) {}
   }
 
-  // Restore exactly the web that was on screen. `seen` covers nodes revealed
-  // by opening a neighbour, which no `shown` counter records; older saves
-  // without it fall back to the read list.
+  // Rebuild the identical web: every node goes back to the slot it held, so a
+  // reload is indistinguishable from never having left.
   function restore(saved) {
     (saved.shown || []).forEach(function (pair) {
       var n = byId[pair[0]];
@@ -218,13 +219,33 @@
     (saved.read || []).forEach(function (id) {
       if (byId[id]) byId[id].read = true;
     });
-    var seen = saved.seen && saved.seen.length ? saved.seen : saved.read || [];
-    byId[seed].visible = true;
-    seen.forEach(function (id) {
-      if (byId[id]) byId[id].visible = true;
+
+    slots = {};
+    var root = byId[seed];
+    root.visible = true;
+    assignSlot(root, null);
+
+    (saved.pos || []).forEach(function (entry) {
+      var n = byId[entry[0]];
+      if (!n || n.id === seed) return;
+      n.visible = true;
+      claimSlot(n, entry[1], entry[2]);
+    });
+
+    // Older saves, and anything read but missing a slot, get one now.
+    var legacy = saved.seen || saved.read || [];
+    legacy.forEach(function (id) {
+      var n = byId[id];
+      if (n && !n.visible) {
+        n.visible = true;
+        assignSlot(n, root);
+      }
     });
     nodes.forEach(function (n) {
-      if (n.read) n.visible = true;
+      if (n.read && !n.visible) {
+        n.visible = true;
+        assignSlot(n, root);
+      }
     });
   }
 
@@ -306,9 +327,9 @@
   function open(node, opts) {
     if (!node) return;
     var options = opts || {};
-    if (reveal(node, active)) relayout();
+    if (reveal(node, active)) ensureFits();
     node.read = true;
-    if (options.grow !== false) expand(node);
+    if (options.grow !== false && expand(node)) ensureFits();
     active = node;
     renderPane();
     updateProgress();
@@ -332,6 +353,8 @@
   function resize() {
     DPR = Math.min(window.devicePixelRatio || 1, 2);
     var r = canvas.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    if (Math.abs(r.width - W) < 0.5 && Math.abs(r.height - H) < 0.5) return;
     W = r.width;
     H = r.height;
     canvas.width = Math.round(W * DPR);
@@ -381,35 +404,39 @@
     return (4 + Math.sqrt(deg) * 1.15 + (n === active ? 2.5 : 0)) * 1;
   }
 
-  function fitToView() {
-    var vis = visible();
-    if (!vis.length) return;
-    var minX = Infinity,
-      maxX = -Infinity,
-      minY = Infinity,
-      maxY = -Infinity;
-    vis.forEach(function (n) {
-      minX = Math.min(minX, n.x);
-      maxX = Math.max(maxX, n.x);
-      minY = Math.min(minY, n.y);
-      maxY = Math.max(maxY, n.y);
+  function outerRadius() {
+    var maxR = RING * 0.6;
+    visible().forEach(function (n) {
+      var tx = n.tx === undefined ? n.x : n.tx;
+      var ty = n.ty === undefined ? n.y : n.ty;
+      maxR = Math.max(maxR, Math.sqrt(tx * tx + ty * ty));
     });
-    var pad = 95;
-    view.k = Math.max(
-      0.3,
-      Math.min(
-        1.5,
-        Math.min(W / (maxX - minX + pad * 2), H / (maxY - minY + pad * 2))
-      )
-    );
-    targetView = { x: -(minX + maxX) / 2, y: -(minY + maxY) / 2 };
+    return maxR;
   }
 
-  // Keep the hub centred — panning to each opened node is what stopped the
-  // rings reading as a web. Only move the view if the node is off screen.
+  // The hub stays dead centre. Only the zoom changes as the web grows, so the
+  // entries you started from never drift out of view.
+  var FIT_PAD = 110;
+
+  function fitToView() {
+    if (!visible().length) return;
+    view.k = Math.max(
+      0.45,
+      Math.min(1.35, Math.min(W, H) / (2 * (outerRadius() + FIT_PAD)))
+    );
+    targetView = { x: 0, y: 0 };
+  }
+
+  // Widen the view only when the web has outgrown it.
+  function ensureFits() {
+    if ((outerRadius() + FIT_PAD) * 2 * view.k > Math.min(W, H)) fitToView();
+  }
+
+  // Never pan to the opened entry: the hub stays centred and the web keeps
+  // its shape. Only widen the view if the entry sits outside it.
   function focusOn(node) {
     var p = toScreen(node);
-    var pad = 70;
+    var pad = 60;
     if (p.x > pad && p.x < W - pad && p.y > pad && p.y < H - pad) return;
     fitToView();
   }
@@ -491,12 +518,14 @@
           pb = toScreen(b);
         var live = active && (a === active || b === active);
         var c = threadPath(pa, pb, centre);
-        ctx.strokeStyle = live ? css.accent : css["fg-faint"];
-        ctx.globalAlpha = live ? 0.65 : 0.1;
+        ctx.strokeStyle = live ? css.accent : css["fg-muted"];
+        ctx.globalAlpha = live ? 0.75 : 0.26;
+        ctx.lineWidth = live ? 1.6 : 1;
         ctx.beginPath();
         ctx.moveTo(pa.x, pa.y);
         ctx.quadraticCurveTo(c.cx, c.cy, pb.x, pb.y);
         ctx.stroke();
+        ctx.lineWidth = 1;
 
         // Dew on the threads of whatever you are reading.
         if (live && view.k > 0.5) {
@@ -742,8 +771,11 @@
     active = null;
     view = { x: 0, y: 0, k: 1 };
     targetView = null;
-    place(byId[seed], 0);
-    relayout();
+    slots = {};
+    assignSlot(byId[seed], null);
+    byId[seed].visible = true;
+    byId[seed].x = 0;
+    byId[seed].y = 0;
     if (history.replaceState) history.replaceState(null, "", location.pathname);
     renderPane();
     updateProgress();
@@ -759,6 +791,14 @@
   var mq = window.matchMedia("(prefers-color-scheme: dark)");
   if (mq.addEventListener) mq.addEventListener("change", readTheme);
   window.addEventListener("resize", resize);
+  // The pane can change size without the window doing so — the language notice
+  // appearing, for one — and a stale bitmap distorts everything drawn into it.
+  if (window.ResizeObserver) {
+    new ResizeObserver(function () {
+      resize();
+      ensureFits();
+    }).observe(canvas);
+  }
 
   /* ---------------- boot ---------------- */
 
@@ -768,7 +808,6 @@
   var saved = load();
   if (saved) {
     restore(saved);
-    relayout();
     // Snap straight onto the laid-out web, so a refresh shows the shape you
     // left rather than an animation of it assembling itself.
     visible().forEach(function (n) {
@@ -776,8 +815,10 @@
       n.y = n.ty;
     });
   } else {
-    place(byId[seed], 0);
-    relayout();
+    byId[seed].visible = true;
+    assignSlot(byId[seed], null);
+    byId[seed].x = 0;
+    byId[seed].y = 0;
   }
 
   var fromHash = location.hash

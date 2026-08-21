@@ -457,7 +457,13 @@ body.explorer-body {
   background: var(--bg-sunken);
 }
 
+/* Absolutely positioned so the canvas always has a definite height. With
+   `height: 100%` against an indefinite grid row it fell back to its intrinsic
+   2:1 ratio, and CSS then stretched that bitmap to fill the pane — which drew
+   the whole web as an ellipse and threw off every fit calculation. */
 #web {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
