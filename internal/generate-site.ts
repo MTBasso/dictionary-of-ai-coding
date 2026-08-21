@@ -145,6 +145,103 @@ function readEntry(locale: Locale, term: string, fallback: Locale): Entry {
   };
 }
 
+/* ---------------- graph ---------------- */
+
+type GraphNode = {
+  id: string;
+  term: string;
+  slug: string;
+  section: string;
+  /** Neighbour ids, best first. Reveal order in the explorer. */
+  neighbors: string[];
+};
+
+type Graph = {
+  nodes: GraphNode[];
+  edges: [string, string, number][];
+  seed: string;
+};
+
+const ENTRY_LINK_RE = /\[[^\]]+\]\(\.\/([^)]+)\.md\)/g;
+
+function pairKey(a: string, b: string): string {
+  return a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`;
+}
+
+// Cross-references between entries, as an undirected weighted graph.
+// Weight is how many times the two entries link to each other; because the
+// repo links only the first occurrence of a term, that is 1 or 2, so it is a
+// coarse signal and curriculum order does most of the ranking work.
+function buildGraph(
+  locale: Locale,
+  sections: RenderedSection[],
+  fallback: Locale
+): Graph {
+  const order: string[] = [];
+  const sectionOf = new Map<string, string>();
+  for (const s of sections) {
+    for (const e of s.entries) {
+      order.push(e.term);
+      sectionOf.set(e.term, s.heading);
+    }
+  }
+  const rank = new Map(order.map((t, i) => [t, i]));
+  const weights = new Map<string, number>();
+
+  for (const term of order) {
+    // Read links from whichever file the locale actually rendered.
+    let path = join(ROOT, locale.dictDir, `${term}.md`);
+    if (!existsSync(path)) path = join(ROOT, fallback.dictDir, `${term}.md`);
+    const body = stripFrontmatter(readFileSync(path, "utf8"));
+    for (const m of body.matchAll(ENTRY_LINK_RE)) {
+      const raw = m[1];
+      if (!raw) continue;
+      const target = decodeURIComponent(raw);
+      if (target === term || !rank.has(target)) continue;
+      const key = pairKey(term, target);
+      weights.set(key, (weights.get(key) ?? 0) + 1);
+    }
+  }
+
+  const adjacency = new Map<string, { id: string; weight: number }[]>(
+    order.map((t) => [t, []])
+  );
+  const edges: [string, string, number][] = [];
+  for (const [key, weight] of weights) {
+    const [a, b] = key.split("\u0000") as [string, string];
+    edges.push([a, b, weight]);
+    adjacency.get(a)?.push({ id: b, weight });
+    adjacency.get(b)?.push({ id: a, weight });
+  }
+
+  const nodes: GraphNode[] = order.map((term) => ({
+    id: term,
+    term,
+    slug: headingSlug(term),
+    section: sectionOf.get(term) ?? "",
+    neighbors: (adjacency.get(term) ?? [])
+      // Stronger pairing first, then whichever comes earlier in the
+      // curriculum — so foundations surface before the terms built on them.
+      .sort(
+        (x, y) =>
+          y.weight - x.weight || (rank.get(x.id) ?? 0) - (rank.get(y.id) ?? 0)
+      )
+      .map((n) => n.id),
+  }));
+
+  const seed = order[0];
+  if (!seed) fail("Curriculum.md has no entries");
+  return { nodes, edges, seed };
+}
+
+// Embedded as JSON in a <script>; neutralise anything that could close it.
+function jsonForScript(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
 function renderToc(locale: Locale, sections: RenderedSection[]): string {
   const blocks = sections
     .map((s) => {
@@ -202,45 +299,157 @@ const MOON_ICON =
   '<svg class="icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">' +
   '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
 
-function renderPage(
+/** Root-relative output path for each page, keyed by role. */
+function pathFor(locale: Locale, role: "explorer" | "reference"): string {
+  const localePart = locale.dirName === "" ? "" : `${locale.dirName}/`;
+  return role === "explorer" ? localePart : `${localePart}reference/`;
+}
+
+/** Links from a page at `here` to the root-relative `target`. */
+function linkTo(here: string, target: string): string {
+  if (here === target) return "./";
+  const depth = here === "" ? 0 : here.split("/").filter(Boolean).length;
+  const base = "../".repeat(depth);
+  return base + target || "./";
+}
+
+function head(
   locale: Locale,
   other: Locale,
-  sections: RenderedSection[]
+  here: string,
+  otherHere: string,
+  title: string
 ): string {
-  // Root locale sits at site/, others at site/<dirName>/.
-  const base = locale.dirName === "" ? "" : "../";
-  const otherHref =
-    other.dirName === "" ? `${base}` || "./" : `${base}${other.dirName}/`;
-  const intro = renderMarkdown(
-    readFileSync(join(SITE_SRC, `intro.${locale.id}.md`), "utf8")
-  );
   const headScript = readFileSync(join(SITE_SRC, "head.js"), "utf8");
-
-  return `<!doctype html>
-<html lang="${locale.id}" dir="ltr">
-<head>
-<meta charset="utf-8">
+  return `<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(locale.title)}</title>
+<title>${escapeHtml(title)}</title>
 <meta name="description" content="${escapeHtml(locale.metaDescription)}">
-<link rel="alternate" hreflang="${other.id}" href="${otherHref}">
-<link rel="alternate" hreflang="${locale.id}" href="${base === "" ? "./" : base}">
-<link rel="stylesheet" href="${base}assets/styles.css">
-<script>${headScript}</script>
-</head>
-<body>
-<a class="skip-link" href="#main-content">${escapeHtml(locale.skipToContent)}</a>
-<header class="site-header">
-  <a class="wordmark" href="${base === "" ? "./" : base}">${escapeHtml(locale.title)}</a>
+<link rel="alternate" hreflang="${other.id}" href="${linkTo(here, otherHere)}">
+<link rel="alternate" hreflang="${locale.id}" href="${linkTo(here, here)}">
+<link rel="stylesheet" href="${linkTo(here, "assets/styles.css")}">
+<script>${headScript}</script>`;
+}
+
+/** Header bar. `extra` sits to the left of the language and colours buttons. */
+function header(
+  locale: Locale,
+  other: Locale,
+  here: string,
+  otherHere: string,
+  homeHref: string,
+  extra: string
+): string {
+  return `<header class="site-header">
+  <a class="wordmark" href="${homeHref}">${escapeHtml(locale.title)}</a>
   <nav class="controls">
-    <a class="btn lang-btn" href="${otherHref}" data-target-locale="${other.id}" hreflang="${other.id}" lang="${other.id}" title="${escapeHtml(locale.langLabel(other.endonym))}">
+    ${extra}
+    <a class="btn lang-btn" href="${linkTo(here, otherHere)}" data-target-locale="${other.id}" hreflang="${other.id}" lang="${other.id}" title="${escapeHtml(locale.langLabel(other.endonym))}">
       ${GLOBE_ICON}<span>${escapeHtml(other.endonym)}</span>
     </a>
     <button class="btn theme-btn" type="button" title="${escapeHtml(locale.themeLabel)}" aria-label="${escapeHtml(locale.themeLabel)}">
       ${SUN_ICON}${MOON_ICON}<span>${escapeHtml(locale.themeLabel)}</span>
     </button>
   </nav>
-</header>
+</header>`;
+}
+
+function footer(locale: Locale): string {
+  return `<footer class="site-footer wrap">
+  <p>${escapeHtml(locale.metaDescription)}</p>
+  <p><a href="https://github.com/MTBasso/dictionary-of-ai-coding">GitHub</a> · <a href="https://aicodingdictionary.com">aicodingdictionary.com</a></p>
+</footer>`;
+}
+
+/** The graph explorer: the web on the left, the entry you opened on the right. */
+function renderExplorer(
+  locale: Locale,
+  other: Locale,
+  sections: RenderedSection[],
+  graph: Graph
+): string {
+  const here = pathFor(locale, "explorer");
+  const otherHere = pathFor(other, "explorer");
+  const referenceHref = linkTo(here, pathFor(locale, "reference"));
+
+  const entries: Record<string, string> = {};
+  for (const s of sections) {
+    for (const e of s.entries) entries[e.term] = e.html;
+  }
+
+  const payload = {
+    locale: locale.id,
+    seed: graph.seed,
+    nodes: graph.nodes,
+    edges: graph.edges,
+    entries,
+    ui: locale.ui,
+  };
+
+  const refLink = `<a class="btn" href="${referenceHref}">${escapeHtml(locale.ui.reference)}</a>`;
+
+  return `<!doctype html>
+<html lang="${locale.id}" dir="ltr">
+<head>
+${head(locale, other, here, otherHere, locale.title)}
+</head>
+<body class="explorer-body">
+<div class="app">
+${header(locale, other, here, otherHere, linkTo(here, here), refLink)}
+  <main class="explorer">
+    <div class="web-pane">
+      <canvas id="web"></canvas>
+      <div class="web-controls">
+        <div class="search-wrap">
+          <input id="search" type="search" autocomplete="off" placeholder="${escapeHtml(locale.ui.search)}" aria-label="${escapeHtml(locale.ui.search)}">
+          <ul id="results" hidden></ul>
+        </div>
+      </div>
+      <div class="web-status">
+        <span id="progress"></span>
+        <button type="button" id="recenter">${escapeHtml(locale.ui.recenter)}</button>
+        <button type="button" id="reset">${escapeHtml(locale.ui.reset)}</button>
+      </div>
+    </div>
+    <div class="read-pane" id="pane">
+      <noscript>
+        <div class="noscript">${escapeHtml(locale.ui.noscript)}
+          <p><a href="${referenceHref}">${escapeHtml(locale.ui.reference)}</a></p>
+        </div>
+      </noscript>
+    </div>
+  </main>
+</div>
+<script>window.__DICT__=${jsonForScript(payload)};</script>
+<script src="${linkTo(here, "assets/app.js")}"></script>
+<script src="${linkTo(here, "assets/graph.js")}"></script>
+</body>
+</html>
+`;
+}
+
+/** The flat, scrollable page — every entry in curriculum order. */
+function renderReference(
+  locale: Locale,
+  other: Locale,
+  sections: RenderedSection[]
+): string {
+  const here = pathFor(locale, "reference");
+  const otherHere = pathFor(other, "reference");
+  const explorerHref = linkTo(here, pathFor(locale, "explorer"));
+  const intro = renderMarkdown(
+    readFileSync(join(SITE_SRC, `intro.${locale.id}.md`), "utf8")
+  );
+  const explorerLink = `<a class="btn" href="${explorerHref}">${escapeHtml(locale.ui.explorer)}</a>`;
+
+  return `<!doctype html>
+<html lang="${locale.id}" dir="ltr">
+<head>
+${head(locale, other, here, otherHere, locale.ui.referenceTitle)}
+</head>
+<body>
+<a class="skip-link" href="#main-content">${escapeHtml(locale.skipToContent)}</a>
+${header(locale, other, here, otherHere, explorerHref, explorerLink)}
 <main id="main-content" class="wrap">
   <div class="hero">
     <h1>${escapeHtml(locale.title)}</h1>
@@ -251,11 +460,8 @@ ${renderToc(locale, sections)}
   <hr>
 ${renderEntries(sections)}
 </main>
-<footer class="site-footer wrap">
-  <p>${escapeHtml(locale.metaDescription)}</p>
-  <p><a href="https://github.com/MTBasso/dictionary-of-ai-coding">GitHub</a> · <a href="https://aicodingdictionary.com">aicodingdictionary.com</a></p>
-</footer>
-<script src="${base}assets/app.js"></script>
+${footer(locale)}
+<script src="${linkTo(here, "assets/app.js")}"></script>
 </body>
 </html>
 `;
@@ -268,8 +474,9 @@ function main(): void {
 
   rmSync(OUTPUT, { recursive: true, force: true });
   mkdirSync(join(OUTPUT, "assets"), { recursive: true });
-  cpSync(join(SITE_SRC, "styles.css"), join(OUTPUT, "assets", "styles.css"));
-  cpSync(join(SITE_SRC, "app.js"), join(OUTPUT, "assets", "app.js"));
+  for (const asset of ["styles.css", "app.js", "graph.js"]) {
+    cpSync(join(SITE_SRC, asset), join(OUTPUT, "assets", asset));
+  }
 
   for (const locale of LOCALES) {
     const other = LOCALES.find((l) => l.id !== locale.id) ?? locale;
@@ -284,22 +491,31 @@ function main(): void {
       };
     });
 
-    const dir = locale.dirName === "" ? OUTPUT : join(OUTPUT, locale.dirName);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "index.html"), renderPage(locale, other, rendered));
+    const graph = buildGraph(locale, rendered, english);
+
+    for (const role of ["explorer", "reference"] as const) {
+      const dir = join(OUTPUT, pathFor(locale, role));
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, "index.html"),
+        role === "explorer"
+          ? renderExplorer(locale, other, rendered, graph)
+          : renderReference(locale, other, rendered)
+      );
+    }
 
     const total = rendered.reduce((n, s) => n + s.entries.length, 0);
     const missing = rendered
       .flatMap((s) => s.entries)
       .filter((e) => !e.translated)
       .map((e) => e.term);
-    const where = locale.dirName === "" ? "site/" : `site/${locale.dirName}/`;
+    const degree = (2 * graph.edges.length) / graph.nodes.length;
     console.log(
-      `${where.padEnd(12)} ${locale.id.padEnd(6)} ${total - missing.length}/${total} entries`
+      `site/${pathFor(locale, "explorer").padEnd(8)} ${locale.id.padEnd(6)} ` +
+        `${total - missing.length}/${total} entries, ` +
+        `${graph.edges.length} links, avg degree ${degree.toFixed(1)}`
     );
-    if (missing.length) {
-      console.log(`  untranslated: ${missing.join(", ")}`);
-    }
+    if (missing.length) console.log(`  untranslated: ${missing.join(", ")}`);
   }
 }
 

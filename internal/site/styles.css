@@ -425,3 +425,320 @@ hr {
 .site-footer p {
   margin: 0.4rem 0;
 }
+
+/* ================= graph explorer ================= */
+
+body.explorer-body {
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.app {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100dvh;
+}
+
+.explorer {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  min-height: 0;
+}
+
+/* --- left: the web --- */
+
+.web-pane {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  background: var(--bg-sunken);
+}
+
+#web {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+
+.web-controls {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  right: 0.75rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+
+.web-controls > * {
+  pointer-events: auto;
+}
+
+.search-wrap {
+  position: relative;
+  flex: 1;
+  max-width: 15rem;
+}
+
+#search {
+  width: 100%;
+  padding: 0.4rem 0.65rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--fg);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+#search::placeholder {
+  color: var(--fg-faint);
+}
+
+#results {
+  position: absolute;
+  top: calc(100% + 0.3rem);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 0.25rem;
+  list-style: none;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  max-height: 15rem;
+  overflow-y: auto;
+  z-index: 5;
+}
+
+#results li {
+  margin: 0;
+}
+
+#results button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.35rem 0.5rem;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--fg);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+#results button:hover {
+  background: var(--bg-sunken);
+}
+
+#results .none {
+  padding: 0.35rem 0.5rem;
+  font-size: 0.85rem;
+  color: var(--fg-faint);
+}
+
+.web-status {
+  position: absolute;
+  left: 0.75rem;
+  bottom: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--fg-muted);
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+  padding: 0.3rem 0.5rem;
+  border-radius: var(--radius);
+}
+
+.web-status button {
+  font: inherit;
+  color: var(--fg-muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.15rem 0.4rem;
+  cursor: pointer;
+}
+
+.web-status button:hover {
+  color: var(--fg);
+  border-color: var(--border-strong);
+}
+
+/* --- right: the reading pane --- */
+
+.read-pane {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: clamp(1.25rem, 3vw, 2.5rem);
+  scroll-behavior: auto;
+}
+
+.read-pane > * {
+  max-width: 42rem;
+  margin-inline: auto;
+}
+
+.read-pane .welcome h2,
+.read-pane .entry h2 {
+  font-size: 1.6rem;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.35rem;
+}
+
+.read-pane .welcome p {
+  color: var(--fg-muted);
+}
+
+.read-pane .sect {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  margin: 0 0 1.5rem;
+}
+
+.related {
+  margin-top: 2.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+}
+
+.related h3 {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  margin: 0 0 0.6rem;
+}
+
+.related ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.related li {
+  margin: 0;
+}
+
+.related a {
+  display: inline-block;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.85rem;
+  text-decoration: none;
+  color: var(--fg-muted);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.related a:hover {
+  color: var(--fg);
+  border-color: var(--border-strong);
+}
+
+.tag {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-faint);
+}
+
+.noscript {
+  padding: 1rem;
+  margin: 1rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+
+/* Narrow screens: web on top, text below. */
+@media (max-width: 56rem) {
+  body.explorer-body,
+  .app {
+    height: auto;
+    overflow: visible;
+  }
+  .explorer {
+    grid-template-columns: 1fr;
+  }
+  .web-pane {
+    height: 60vh;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .read-pane {
+    overflow: visible;
+  }
+}
+
+.read-pane .start {
+  margin-top: 0.5rem;
+  padding: 0.5rem 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  color: var(--bg);
+  background: var(--accent);
+  border: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.read-pane .start:hover {
+  filter: brightness(1.08);
+}
+
+/* Phone widths: the header's three labelled buttons are what force a minimum
+   width wider than the viewport, so drop to icons and let the wordmark clip. */
+@media (max-width: 34rem) {
+  .site-header {
+    gap: 0.5rem;
+    padding: 0.6rem 0.85rem;
+  }
+
+  .wordmark {
+    min-width: 0;
+    font-size: 0.74rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .controls {
+    gap: 0.3rem;
+  }
+
+  .btn {
+    padding: 0.35rem 0.5rem;
+    font-size: 0.7rem;
+  }
+
+  .lang-btn span,
+  .theme-btn span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .web-pane {
+    height: 52vh;
+  }
+}
