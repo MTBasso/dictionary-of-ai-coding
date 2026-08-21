@@ -1,11 +1,16 @@
 // Graph explorer. Source: internal/site/graph.js
 //
-// The dictionary's cross-references form a dense graph — average degree ~15,
-// and every entry sits within two hops of "AI". Revealing every neighbour of
-// every entry you read would put all 69 nodes on screen after two clicks and
-// defeat the point, so reveals are rationed: opening an entry reveals its top
-// REVEAL_BATCH ranked neighbours, and re-opening it reveals the next batch.
-// That keeps every entry reachable without the web exploding.
+// The dictionary's cross-references are dense — 527 links, average degree ~15,
+// every entry within two hops of "AI". Revealing a whole neighbourhood per read
+// would put all 69 nodes on screen after two clicks, so reveals are rationed:
+// opening an entry offers its top REVEAL_BATCH ranked neighbours, and opening
+// it again offers the next batch. Search reaches anything directly.
+//
+// Layout is an orb web. Every node carries the depth at which it was revealed,
+// and a radial force pulls it onto the ring for that depth: the seed sits at
+// the centre, its neighbours form the first ring, theirs the next. Real links
+// then fall naturally into radial spokes and cross-threads. No thread on
+// screen is decorative — every one is a real cross-reference between entries.
 
 (function () {
   "use strict";
@@ -14,6 +19,7 @@
   if (!DATA) return;
 
   var REVEAL_BATCH = 3;
+  var RING = 205; // distance between web rings, in world units
   var UI = DATA.ui;
   var STORE_KEY = "dict-read-" + DATA.locale;
 
@@ -25,13 +31,13 @@
     n.y = 0;
     n.vx = 0;
     n.vy = 0;
+    n.depth = 0;
     n.visible = false;
     n.read = false;
     n.shown = 0; // how many of its ranked neighbours have been offered
     byId[n.id] = n;
   });
 
-  // Adjacency, for drawing edges between visible nodes.
   var adj = {};
   nodes.forEach(function (n) {
     adj[n.id] = {};
@@ -41,16 +47,129 @@
     adj[e[1]][e[0]] = e[2];
   });
 
-  /* ---------------- state ---------------- */
-
   var active = null;
   var seed = DATA.seed;
 
+  /* ---------------- reveal ---------------- */
+
+  function place(node, depth) {
+    node.visible = true;
+    node.depth = depth;
+  }
+
+  // --- orb-web layout -------------------------------------------------
+  //
+  // Nodes are laid out on concentric rings around the seed. Order is breadth
+  // first from the hub, so the closer an entry is to where you started, the
+  // further in it sits; each ring is filled to the spacing its circumference
+  // allows before the next one begins. Rings are therefore "roughly how far
+  // out you are", not a strict hop count — the honest structure is in the
+  // threads, which are all real cross-references.
+
+  function ringRadius(depth) {
+    return depth * RING;
+  }
+
+  // How many labelled nodes fit around a ring before they collide.
+  function ringCapacity(depth) {
+    return Math.max(6, Math.floor((2 * Math.PI * ringRadius(depth)) / 108));
+  }
+
+  function fract(x) {
+    return x - Math.floor(x);
+  }
+
+  function relayout() {
+    var vis = visible();
+    if (!vis.length) return;
+    var root = byId[seed];
+
+    // Breadth-first from the hub through the visible web.
+    var seen = {};
+    var order = [];
+    if (root.visible) {
+      seen[root.id] = true;
+      order.push(root);
+      for (var i = 0; i < order.length; i++) {
+        var u = order[i];
+        for (var k = 0; k < u.neighbors.length; k++) {
+          var v = byId[u.neighbors[k]];
+          if (v && v.visible && !seen[v.id]) {
+            seen[v.id] = true;
+            order.push(v);
+          }
+        }
+      }
+    }
+    // Anything not reachable from the hub still needs a place.
+    vis.forEach(function (n) {
+      if (!seen[n.id]) order.push(n);
+    });
+
+    root.depth = 0;
+    root.angle = 0;
+    root.tx = 0;
+    root.ty = 0;
+
+    var depth = 1;
+    var idx = 1; // order[0] is the hub
+    while (idx < order.length) {
+      var capacity = Math.min(ringCapacity(depth), order.length - idx);
+      var ring = order.slice(idx, idx + capacity);
+      // Alternate rings are offset so spokes stagger rather than line up.
+      var offset = depth % 2 ? Math.PI / capacity : 0;
+      for (var j = 0; j < ring.length; j++) {
+        var node = ring[j];
+        var angle = (j / ring.length) * Math.PI * 2 + offset;
+        // A little deterministic variation keeps it from looking like a dial.
+        var wobble = 0.94 + 0.13 * fract(node.index * 0.6180339887);
+        node.depth = depth;
+        node.angle = angle;
+        node.tx = Math.cos(angle) * ringRadius(depth) * wobble;
+        node.ty = Math.sin(angle) * ringRadius(depth) * wobble;
+      }
+      idx += capacity;
+      depth++;
+    }
+  }
+
+  function reveal(node, near) {
+    if (!node || node.visible) return false;
+    node.visible = true;
+    node.depth = near ? near.depth + 1 : 0;
+    // Spawn on the parent so it visibly travels out to its place on the web.
+    node.x = near ? near.x : 0;
+    node.y = near ? near.y : 0;
+    node.tx = node.x;
+    node.ty = node.y;
+    return true;
+  }
+
+  function expand(node) {
+    var added = 0;
+    while (node.shown < node.neighbors.length && added < REVEAL_BATCH) {
+      var next = byId[node.neighbors[node.shown]];
+      node.shown++;
+      if (reveal(next, node)) added++;
+    }
+    if (added) relayout();
+    return added;
+  }
+
+  function hiddenCount(node) {
+    var n = 0;
+    for (var i = 0; i < node.neighbors.length; i++) {
+      var v = byId[node.neighbors[i]];
+      if (v && !v.visible) n++;
+    }
+    return n;
+  }
+
+  /* ---------------- persistence ---------------- */
+
   function load() {
     try {
-      var raw = localStorage.getItem(STORE_KEY);
-      if (!raw) return null;
-      var parsed = JSON.parse(raw);
+      var parsed = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
       return parsed && parsed.read ? parsed : null;
     } catch (e) {
       return null;
@@ -62,45 +181,51 @@
       localStorage.setItem(
         STORE_KEY,
         JSON.stringify({
-          read: nodes.filter((n) => n.read).map((n) => n.id),
-          shown: nodes.filter((n) => n.shown > 0).map((n) => [n.id, n.shown]),
+          read: nodes
+            .filter(function (n) {
+              return n.read;
+            })
+            .map(function (n) {
+              return n.id;
+            }),
+          shown: nodes
+            .filter(function (n) {
+              return n.shown > 0;
+            })
+            .map(function (n) {
+              return [n.id, n.shown];
+            }),
+          seen: nodes
+            .filter(function (n) {
+              return n.visible;
+            })
+            .map(function (n) {
+              return n.id;
+            }),
         })
       );
     } catch (e) {}
   }
 
-  function reveal(node, near) {
-    if (node.visible) return false;
-    node.visible = true;
-    // Spawn just off its parent so it visibly springs outward.
-    var a = Math.random() * Math.PI * 2;
-    var r = 40 + Math.random() * 30;
-    node.x = (near ? near.x : 0) + Math.cos(a) * r;
-    node.y = (near ? near.y : 0) + Math.sin(a) * r;
-    node.vx = 0;
-    node.vy = 0;
-    node.born = performance.now();
-    return true;
-  }
-
-  // Offer the next batch of a node's ranked neighbours.
-  function expand(node) {
-    var added = 0;
-    while (node.shown < node.neighbors.length && added < REVEAL_BATCH) {
-      var next = byId[node.neighbors[node.shown]];
-      node.shown++;
-      if (next && reveal(next, node)) added++;
-    }
-    return added;
-  }
-
-  function hiddenCount(node) {
-    var n = 0;
-    for (var i = 0; i < node.neighbors.length; i++) {
-      var v = byId[node.neighbors[i]];
-      if (v && !v.visible) n++;
-    }
-    return n;
+  // Restore exactly the web that was on screen. `seen` covers nodes revealed
+  // by opening a neighbour, which no `shown` counter records; older saves
+  // without it fall back to the read list.
+  function restore(saved) {
+    (saved.shown || []).forEach(function (pair) {
+      var n = byId[pair[0]];
+      if (n) n.shown = pair[1];
+    });
+    (saved.read || []).forEach(function (id) {
+      if (byId[id]) byId[id].read = true;
+    });
+    var seen = saved.seen && saved.seen.length ? saved.seen : saved.read || [];
+    byId[seed].visible = true;
+    seen.forEach(function (id) {
+      if (byId[id]) byId[id].visible = true;
+    });
+    nodes.forEach(function (n) {
+      if (n.read) n.visible = true;
+    });
   }
 
   /* ---------------- reading pane ---------------- */
@@ -117,26 +242,25 @@
         return v && v.visible;
       });
     if (!shown.length) return "";
-    var items = shown
-      .map(function (v) {
-        return (
-          '<li><a href="#' +
-          v.slug +
-          '" data-goto="' +
-          v.id +
-          '">' +
-          v.term +
-          "</a>" +
-          (v.read ? ' <span class="tag">' + UI.read + "</span>" : "") +
-          "</li>"
-        );
-      })
-      .join("");
     return (
       '<nav class="related"><h3>' +
       UI.related +
       "</h3><ul>" +
-      items +
+      shown
+        .map(function (v) {
+          return (
+            '<li><a href="#' +
+            v.slug +
+            '" data-goto="' +
+            v.id +
+            '">' +
+            v.term +
+            "</a>" +
+            (v.read ? ' <span class="tag">' + UI.read + "</span>" : "") +
+            "</li>"
+          );
+        })
+        .join("") +
       "</ul></nav>"
     );
   }
@@ -176,21 +300,20 @@
       .replace("%total%", nodes.length);
   }
 
-  function open(node, fromUser) {
+  // `opts.grow` is what separates a click from a page load: reopening an entry
+  // deliberately pushes the web out, but restoring one on refresh must not, or
+  // the web would creep outward every time the page is reloaded.
+  function open(node, opts) {
     if (!node) return;
-    reveal(node, active);
-    if (node.read) {
-      // Re-opening a known entry pushes the web out a little further.
-      expand(node);
-    } else {
-      node.read = true;
-      expand(node);
-    }
+    var options = opts || {};
+    if (reveal(node, active)) relayout();
+    node.read = true;
+    if (options.grow !== false) expand(node);
     active = node;
     renderPane();
     updateProgress();
     save();
-    if (fromUser !== false && history.replaceState) {
+    if (options.push !== false && history.replaceState) {
       history.replaceState(null, "", "#" + node.slug);
     }
     focusOn(node);
@@ -201,6 +324,7 @@
   var canvas = document.getElementById("web");
   var ctx = canvas.getContext("2d");
   var view = { x: 0, y: 0, k: 1 };
+  var targetView = null;
   var W = 0,
     H = 0,
     DPR = 1;
@@ -224,6 +348,7 @@
       "fg-faint",
       "accent",
       "border",
+      "border-strong",
       "bg",
       "bg-raised",
     ].forEach(function (k) {
@@ -231,35 +356,11 @@
     });
   }
 
-  // Frame every visible node, so a web grown past the viewport can be pulled
-  // back into view in one click.
-  function fitToView() {
-    var vis = nodes.filter(function (n) {
+  function visible() {
+    return nodes.filter(function (n) {
       return n.visible;
     });
-    if (!vis.length) return;
-    var minX = Infinity,
-      maxX = -Infinity,
-      minY = Infinity,
-      maxY = -Infinity;
-    vis.forEach(function (n) {
-      minX = Math.min(minX, n.x);
-      maxX = Math.max(maxX, n.x);
-      minY = Math.min(minY, n.y);
-      maxY = Math.max(maxY, n.y);
-    });
-    var pad = 90;
-    var w = maxX - minX + pad * 2;
-    var h = maxY - minY + pad * 2;
-    view.k = Math.max(0.32, Math.min(1.5, Math.min(W / w, H / h)));
-    targetView = { x: -(minX + maxX) / 2, y: -(minY + maxY) / 2 };
   }
-
-  function focusOn(node) {
-    // Ease the view so the opened node sits near the middle.
-    targetView = { x: -node.x, y: -node.y, k: view.k };
-  }
-  var targetView = null;
 
   function toScreen(p) {
     return {
@@ -274,76 +375,111 @@
     };
   }
 
+  // Bigger circles mean more connections, so the hubs read as hubs.
   function radius(n) {
-    return n === active ? 9 : n.read ? 7 : 5;
+    var deg = n.neighbors.length;
+    return (4 + Math.sqrt(deg) * 1.15 + (n === active ? 2.5 : 0)) * 1;
+  }
+
+  function fitToView() {
+    var vis = visible();
+    if (!vis.length) return;
+    var minX = Infinity,
+      maxX = -Infinity,
+      minY = Infinity,
+      maxY = -Infinity;
+    vis.forEach(function (n) {
+      minX = Math.min(minX, n.x);
+      maxX = Math.max(maxX, n.x);
+      minY = Math.min(minY, n.y);
+      maxY = Math.max(maxY, n.y);
+    });
+    var pad = 95;
+    view.k = Math.max(
+      0.3,
+      Math.min(
+        1.5,
+        Math.min(W / (maxX - minX + pad * 2), H / (maxY - minY + pad * 2))
+      )
+    );
+    targetView = { x: -(minX + maxX) / 2, y: -(minY + maxY) / 2 };
+  }
+
+  // Keep the hub centred — panning to each opened node is what stopped the
+  // rings reading as a web. Only move the view if the node is off screen.
+  function focusOn(node) {
+    var p = toScreen(node);
+    var pad = 70;
+    if (p.x > pad && p.x < W - pad && p.y > pad && p.y < H - pad) return;
+    fitToView();
   }
 
   /* ---------------- simulation ---------------- */
 
+  var dragging = null;
+
+  // No force simulation any more: positions ease toward the laid-out target,
+  // which keeps the web's shape stable instead of drifting every frame.
   function step() {
-    var vis = nodes.filter(function (n) {
-      return n.visible;
+    var vis = visible();
+    for (var i = 0; i < vis.length; i++) {
+      var n = vis[i];
+      if (n === dragging) continue;
+      if (n.tx === undefined) continue;
+      n.x += (n.tx - n.x) * 0.085;
+      n.y += (n.ty - n.y) * 0.085;
+    }
+  }
+
+  /* ---------------- drawing ---------------- */
+
+  // A thread sags toward the middle of the web, the way silk does between
+  // radials, instead of running dead straight.
+  function threadPath(pa, pb, centre) {
+    var mx = (pa.x + pb.x) / 2,
+      my = (pa.y + pb.y) / 2;
+    var dx = centre.x - mx,
+      dy = centre.y - my;
+    var len = Math.sqrt(dx * dx + dy * dy) || 1;
+    var chord = Math.sqrt(
+      (pb.x - pa.x) * (pb.x - pa.x) + (pb.y - pa.y) * (pb.y - pa.y)
+    );
+    var sag = Math.min(chord * 0.11, 24);
+    return { cx: mx + (dx / len) * sag, cy: my + (dy / len) * sag };
+  }
+
+  function quadAt(pa, c, pb, t) {
+    var u = 1 - t;
+    return {
+      x: u * u * pa.x + 2 * u * t * c.cx + t * t * pb.x,
+      y: u * u * pa.y + 2 * u * t * c.cy + t * t * pb.y,
+    };
+  }
+
+  function drawRings(centre, vis) {
+    var deepest = 0;
+    vis.forEach(function (n) {
+      deepest = Math.max(deepest, n.depth);
     });
-    var i, j, a, b, dx, dy, d;
-
-    for (i = 0; i < vis.length; i++) {
-      a = vis[i];
-      for (j = i + 1; j < vis.length; j++) {
-        b = vis[j];
-        dx = b.x - a.x;
-        dy = b.y - a.y;
-        d = Math.sqrt(dx * dx + dy * dy) || 0.01;
-        if (d > 520) continue;
-        var rep = 4600 / (d * d);
-        var ux = dx / d,
-          uy = dy / d;
-        a.vx -= ux * rep;
-        a.vy -= uy * rep;
-        b.vx += ux * rep;
-        b.vy += uy * rep;
-      }
+    ctx.strokeStyle = css["border-strong"];
+    ctx.globalAlpha = 0.13;
+    ctx.lineWidth = 1;
+    for (var d = 1; d <= deepest; d++) {
+      ctx.beginPath();
+      ctx.arc(centre.x, centre.y, ringRadius(d) * view.k, 0, Math.PI * 2);
+      ctx.stroke();
     }
-
-    for (i = 0; i < vis.length; i++) {
-      a = vis[i];
-      var nb = adj[a.id];
-      for (var id in nb) {
-        b = byId[id];
-        if (!b || !b.visible || b.index < a.index) continue;
-        dx = b.x - a.x;
-        dy = b.y - a.y;
-        d = Math.sqrt(dx * dx + dy * dy) || 0.01;
-        var rest = 155;
-        var f = (d - rest) * 0.012;
-        var ux2 = dx / d,
-          uy2 = dy / d;
-        a.vx += ux2 * f;
-        a.vy += uy2 * f;
-        b.vx -= ux2 * f;
-        b.vy -= uy2 * f;
-      }
-      // Gentle pull to the origin keeps the web from drifting away.
-      a.vx -= a.x * 0.0016;
-      a.vy -= a.y * 0.0016;
-    }
-
-    for (i = 0; i < vis.length; i++) {
-      a = vis[i];
-      if (a === dragging) continue;
-      a.vx *= 0.86;
-      a.vy *= 0.86;
-      a.x += Math.max(-12, Math.min(12, a.vx));
-      a.y += Math.max(-12, Math.min(12, a.vy));
-    }
+    ctx.globalAlpha = 1;
   }
 
   function draw() {
     ctx.clearRect(0, 0, W, H);
-    var vis = nodes.filter(function (n) {
-      return n.visible;
-    });
+    var vis = visible();
+    var centre = toScreen({ x: 0, y: 0 });
 
-    // edges
+    drawRings(centre, vis);
+
+    // threads
     ctx.lineWidth = 1;
     for (var i = 0; i < vis.length; i++) {
       var a = vis[i];
@@ -353,13 +489,26 @@
         if (!b || !b.visible || b.index < a.index) continue;
         var pa = toScreen(a),
           pb = toScreen(b);
-        var touching = active && (a === active || b === active);
-        ctx.strokeStyle = touching ? css.accent : css.border;
-        ctx.globalAlpha = touching ? 0.55 : 0.32;
+        var live = active && (a === active || b === active);
+        var c = threadPath(pa, pb, centre);
+        ctx.strokeStyle = live ? css.accent : css["fg-faint"];
+        ctx.globalAlpha = live ? 0.65 : 0.1;
         ctx.beginPath();
         ctx.moveTo(pa.x, pa.y);
-        ctx.lineTo(pb.x, pb.y);
+        ctx.quadraticCurveTo(c.cx, c.cy, pb.x, pb.y);
         ctx.stroke();
+
+        // Dew on the threads of whatever you are reading.
+        if (live && view.k > 0.5) {
+          ctx.fillStyle = css.accent;
+          ctx.globalAlpha = 0.55;
+          for (var t = 0.25; t < 0.9; t += 0.25) {
+            var q = quadAt(pa, c, pb, t);
+            ctx.beginPath();
+            ctx.arc(q.x, q.y, 1.3, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
       }
     }
     ctx.globalAlpha = 1;
@@ -368,17 +517,26 @@
     for (var n = 0; n < vis.length; n++) {
       var node = vis[n];
       var p = toScreen(node);
-      var r = radius(node) * Math.min(view.k, 1.4);
+      var r = radius(node) * Math.min(view.k, 1.35);
 
       if (node === active) {
         ctx.beginPath();
-        ctx.arc(p.x, p.y, r + 6, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, r + 7, 0, Math.PI * 2);
         ctx.strokeStyle = css.accent;
-        ctx.globalAlpha = 0.5;
+        ctx.globalAlpha = 0.45;
         ctx.lineWidth = 2;
         ctx.stroke();
         ctx.globalAlpha = 1;
         ctx.lineWidth = 1;
+      }
+
+      if (node.id === seed) {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r + 4, 0, Math.PI * 2);
+        ctx.strokeStyle = css["fg-faint"];
+        ctx.globalAlpha = 0.5;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
       }
 
       ctx.beginPath();
@@ -395,9 +553,8 @@
         ctx.lineWidth = 1;
       }
 
-      // hidden-neighbour badge
       var hid = hiddenCount(node);
-      if (node.read && hid > 0) {
+      if (node.read && hid > 0 && view.k > 0.45) {
         ctx.beginPath();
         ctx.arc(p.x + r + 5, p.y - r - 3, 6.5, 0, Math.PI * 2);
         ctx.fillStyle = css["bg-raised"];
@@ -411,16 +568,17 @@
         ctx.fillText(String(hid), p.x + r + 5, p.y - r - 2.5);
       }
 
-      // label
-      if (view.k > 0.55 || node === active || node.read) {
+      if (node === active || node.read || view.k > 0.78) {
         ctx.font =
           (node === active ? "600 " : "") +
-          Math.round(11 * Math.min(view.k, 1.25)) +
-          "px ui-sans-serif, system-ui, sans-serif";
+          Math.round(Math.max(9, 10 * Math.min(view.k, 1.2))) +
+          "px ui-monospace, SFMono-Regular, Menlo, monospace";
+        ctx.letterSpacing = "0.09em";
         ctx.fillStyle = node === active ? css.fg : css["fg-muted"];
         ctx.textAlign = "center";
         ctx.textBaseline = "top";
-        ctx.fillText(node.term, p.x, p.y + r + 4);
+        ctx.fillText(node.term.toUpperCase(), p.x, p.y + r + 5);
+        ctx.letterSpacing = "0px";
       }
     }
   }
@@ -442,8 +600,7 @@
 
   /* ---------------- interaction ---------------- */
 
-  var dragging = null,
-    panning = false,
+  var panning = false,
     last = null,
     moved = 0;
 
@@ -451,13 +608,11 @@
     var w = toWorld(sx, sy);
     var best = null,
       bestD = Infinity;
-    nodes.forEach(function (n) {
-      if (!n.visible) return;
+    visible().forEach(function (n) {
       var dx = n.x - w.x,
         dy = n.y - w.y;
       var d = Math.sqrt(dx * dx + dy * dy);
-      var reach = (radius(n) + 12) / view.k;
-      if (d < reach && d < bestD) {
+      if (d < (radius(n) + 12) / view.k && d < bestD) {
         best = n;
         bestD = d;
       }
@@ -475,10 +630,8 @@
   });
 
   canvas.addEventListener("pointermove", function (ev) {
-    var n;
     if (!last) {
-      n = hit(ev.offsetX, ev.offsetY);
-      canvas.style.cursor = n ? "pointer" : "grab";
+      canvas.style.cursor = hit(ev.offsetX, ev.offsetY) ? "pointer" : "grab";
       return;
     }
     var dx = ev.offsetX - last.x,
@@ -497,7 +650,7 @@
     last = { x: ev.offsetX, y: ev.offsetY };
   });
 
-  canvas.addEventListener("pointerup", function (ev) {
+  canvas.addEventListener("pointerup", function () {
     if (dragging && moved < 5) open(dragging);
     dragging = null;
     panning = false;
@@ -508,9 +661,11 @@
     "wheel",
     function (ev) {
       ev.preventDefault();
-      var f = Math.exp(-ev.deltaY * 0.0015);
       var before = toWorld(ev.offsetX, ev.offsetY);
-      view.k = Math.max(0.3, Math.min(2.6, view.k * f));
+      view.k = Math.max(
+        0.3,
+        Math.min(2.6, view.k * Math.exp(-ev.deltaY * 0.0015))
+      );
       var after = toWorld(ev.offsetX, ev.offsetY);
       view.x += after.x - before.x;
       view.y += after.y - before.y;
@@ -519,7 +674,6 @@
     { passive: false }
   );
 
-  // Links inside an entry jump to that entry instead of scrolling nowhere.
   paneEl.addEventListener("click", function (ev) {
     var a = ev.target.closest("a[href^='#']");
     if (!a) return;
@@ -583,10 +737,14 @@
       n.visible = false;
       n.read = false;
       n.shown = 0;
+      n.depth = 0;
     });
     active = null;
     view = { x: 0, y: 0, k: 1 };
-    reveal(byId[seed], null);
+    targetView = null;
+    place(byId[seed], 0);
+    relayout();
+    if (history.replaceState) history.replaceState(null, "", location.pathname);
     renderPane();
     updateProgress();
   });
@@ -600,7 +758,6 @@
     });
   var mq = window.matchMedia("(prefers-color-scheme: dark)");
   if (mq.addEventListener) mq.addEventListener("change", readTheme);
-
   window.addEventListener("resize", resize);
 
   /* ---------------- boot ---------------- */
@@ -609,26 +766,18 @@
   resize();
 
   var saved = load();
-  reveal(byId[seed], null);
   if (saved) {
-    (saved.shown || []).forEach(function (pair) {
-      var n = byId[pair[0]];
-      if (n) n.shown = pair[1];
+    restore(saved);
+    relayout();
+    // Snap straight onto the laid-out web, so a refresh shows the shape you
+    // left rather than an animation of it assembling itself.
+    visible().forEach(function (n) {
+      n.x = n.tx;
+      n.y = n.ty;
     });
-    saved.read.forEach(function (id) {
-      var n = byId[id];
-      if (n) {
-        n.read = true;
-        reveal(n, null);
-      }
-    });
-    // Re-offer everything a read entry had already pushed out.
-    nodes.forEach(function (n) {
-      if (!n.read) return;
-      for (var i = 0; i < n.shown && i < n.neighbors.length; i++) {
-        reveal(byId[n.neighbors[i]], n);
-      }
-    });
+  } else {
+    place(byId[seed], 0);
+    relayout();
   }
 
   var fromHash = location.hash
@@ -636,11 +785,15 @@
         return n.slug === location.hash.slice(1);
       })[0]
     : null;
-  if (fromHash) open(fromHash, false);
-  else {
+
+  if (fromHash) {
+    // Restoring, not clicking: must not grow the web.
+    open(fromHash, { grow: false, push: false });
+  } else {
     renderPane();
     updateProgress();
   }
+  if (saved) fitToView();
 
   frame();
 })();
