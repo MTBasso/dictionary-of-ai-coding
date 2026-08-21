@@ -429,14 +429,20 @@ hr {
 /* ================= graph explorer ================= */
 
 body.explorer-body {
+  height: 100vh; /* fallback for browsers without dvh */
   height: 100dvh;
   overflow: hidden;
 }
 
+/* Flex rather than grid rows. The language notice is only rendered after an
+   automatic switch, and `display: none` stops it being a grid item at all —
+   so with `grid-template-rows: auto auto 1fr` the explorer dropped into the
+   second `auto` track and collapsed to the height of its text, leaving the
+   1fr track empty. Flex simply ignores the missing child. */
 .app {
-  display: grid;
-  /* header, optional language notice, then the explorer fills the rest */
-  grid-template-rows: auto auto 1fr;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
   height: 100dvh;
   min-height: 0;
 }
@@ -444,6 +450,7 @@ body.explorer-body {
 .explorer {
   display: grid;
   grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  flex: 1 1 auto;
   min-height: 0;
 }
 
