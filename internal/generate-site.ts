@@ -152,14 +152,27 @@ type GraphNode = {
   term: string;
   slug: string;
   section: string;
+  /** Index of the owning section, 0-based — which wedge the entry sits in. */
+  sectionIndex: number;
+  /** Position within the section, in curriculum order — which slot it takes. */
+  orderInSection: number;
   /** Neighbour ids, best first. Reveal order in the explorer. */
   neighbors: string[];
 };
 
+type GraphSection = {
+  index: number;
+  /** Full heading, e.g. "Section 3 — Tools & Environment". */
+  label: string;
+  /** Heading with the "Section N — " prefix removed, for the legend. */
+  shortLabel: string;
+  count: number;
+};
+
 type Graph = {
   nodes: GraphNode[];
+  sections: GraphSection[];
   edges: [string, string, number][];
-  seed: string;
 };
 
 const ENTRY_LINK_RE = /\[[^\]]+\]\(\.\/([^)]+)\.md\)/g;
@@ -179,12 +192,16 @@ function buildGraph(
 ): Graph {
   const order: string[] = [];
   const sectionOf = new Map<string, string>();
-  for (const s of sections) {
-    for (const e of s.entries) {
+  const sectionIndexOf = new Map<string, number>();
+  const orderInSectionOf = new Map<string, number>();
+  sections.forEach((s, si) => {
+    s.entries.forEach((e, ei) => {
       order.push(e.term);
       sectionOf.set(e.term, s.heading);
-    }
-  }
+      sectionIndexOf.set(e.term, si);
+      orderInSectionOf.set(e.term, ei);
+    });
+  });
   const rank = new Map(order.map((t, i) => [t, i]));
   const weights = new Map<string, number>();
 
@@ -219,6 +236,8 @@ function buildGraph(
     term,
     slug: headingSlug(term),
     section: sectionOf.get(term) ?? "",
+    sectionIndex: sectionIndexOf.get(term) ?? 0,
+    orderInSection: orderInSectionOf.get(term) ?? 0,
     neighbors: (adjacency.get(term) ?? [])
       // Stronger pairing first, then whichever comes earlier in the
       // curriculum — so foundations surface before the terms built on them.
@@ -229,9 +248,21 @@ function buildGraph(
       .map((n) => n.id),
   }));
 
-  const seed = order[0];
-  if (!seed) fail("Curriculum.md has no entries");
-  return { nodes, edges, seed };
+  // "Section 3 — Tools & Environment" -> "Tools & Environment". Both locales
+  // use the em dash, so one rule covers them.
+  const shorten = (heading: string): string => {
+    const parts = heading.split("—");
+    return (parts.length > 1 ? parts.slice(1).join("—") : heading).trim();
+  };
+
+  const graphSections: GraphSection[] = sections.map((s, i) => ({
+    index: i,
+    label: s.heading,
+    shortLabel: shorten(s.heading),
+    count: s.entries.length,
+  }));
+
+  return { nodes, sections: graphSections, edges };
 }
 
 // Embedded as JSON in a <script>; neutralise anything that could close it.
@@ -407,8 +438,8 @@ function renderExplorer(
 
   const payload = {
     locale: locale.id,
-    seed: graph.seed,
     nodes: graph.nodes,
+    sections: graph.sections,
     edges: graph.edges,
     entries,
     ui: locale.ui,
@@ -430,17 +461,34 @@ ${header(locale, other, here, otherHere, linkTo(here, here), refLink)}
   </div>
   <main class="explorer">
     <div class="web-pane">
-      <canvas id="web"></canvas>
+      <aside class="legend" aria-label="${escapeHtml(locale.ui.legend)}">
+        <h2>${escapeHtml(locale.ui.legend)}</h2>
+        <ol>
+${graph.sections
+  .map(
+    (s) =>
+      `          <li><button type="button" data-section="${s.index}" class="sec sec-${s.index + 1}">` +
+      `<span class="swatch" aria-hidden="true"></span>` +
+      `<span class="name">${escapeHtml(s.shortLabel)}</span>` +
+      `<span class="count" data-count="${s.index}">0/${s.count}</span>` +
+      `</button></li>`
+  )
+  .join("\n")}
+        </ol>
+      </aside>
+      <div class="canvas-wrap">
+        <canvas id="web"></canvas>
       <div class="web-controls">
         <div class="search-wrap">
           <input id="search" type="search" autocomplete="off" placeholder="${escapeHtml(locale.ui.search)}" aria-label="${escapeHtml(locale.ui.search)}">
           <ul id="results" hidden></ul>
         </div>
       </div>
-      <div class="web-status">
-        <span id="progress"></span>
-        <button type="button" id="recenter">${escapeHtml(locale.ui.recenter)}</button>
-        <button type="button" id="reset">${escapeHtml(locale.ui.reset)}</button>
+        <div class="web-status">
+          <span id="progress"></span>
+          <button type="button" id="recenter">${escapeHtml(locale.ui.recenter)}</button>
+          <button type="button" id="reset">${escapeHtml(locale.ui.reset)}</button>
+        </div>
       </div>
     </div>
     <div class="read-pane" id="pane">

@@ -1,16 +1,14 @@
 // Graph explorer. Source: internal/site/graph.js
 //
-// The dictionary's cross-references are dense — 527 links, average degree ~15,
-// every entry within two hops of "AI". Revealing a whole neighbourhood per read
-// would put all 69 nodes on screen after two clicks, so reveals are rationed:
-// opening an entry offers its top REVEAL_BATCH ranked neighbours, and opening
-// it again offers the next batch. Search reaches anything directly.
+// The web is organised by the curriculum's seven sections. Each section owns a
+// wedge around the centre, and every entry has a fixed slot inside its wedge
+// decided by curriculum order — allocated up front, drawn only once revealed.
+// The shape therefore never rearranges as you read: it only fills in, and the
+// gaps in a wedge are what is left to do.
 //
-// Layout is an orb web. Every node carries the depth at which it was revealed,
-// and a radial force pulls it onto the ring for that depth: the seed sits at
-// the centre, its neighbours form the first ring, theirs the next. Real links
-// then fall naturally into radial spokes and cross-threads. No thread on
-// screen is decorative — every one is a real cross-reference between entries.
+// The centre carries overall progress. Section hubs are visible from the
+// start, so the whole of what there is to learn is legible immediately without
+// putting all 69 entries on screen at once.
 
 (function () {
   "use strict";
@@ -19,22 +17,75 @@
   if (!DATA) return;
 
   var REVEAL_BATCH = 3;
-  var RING = 172; // distance between web rings, in world units
+
+  // Geometry. The outer radius is fixed by the largest section, so the web
+  // occupies the same space from the first frame to the last and the zoom
+  // never shifts under you.
+  var HUB_R = 150; // section hubs
+  var R0 = 225; // first band of entries
+  var BAND = 50; // radial gap between bands
+  // Two entries across each wedge. Wider than that and the labels collide:
+  // a wedge is only ~51 degrees, which at the inner band is barely 70px per
+  // column, and a term like "Next-token prediction" needs far more.
+  var COLS = 2;
+  var GUTTER = 0.13; // radians of empty space between wedges
+
   var UI = DATA.ui;
   var STORE_KEY = "dict-read-" + DATA.locale;
 
   var nodes = DATA.nodes;
+  var sections = DATA.sections;
   var byId = {};
+
+  /* ---------------- layout ---------------- */
+
+  var TAU = Math.PI * 2;
+  var wedge = TAU / sections.length;
+  // The largest section sets the web's extent; it never changes, so the zoom
+  // is fixed from the first frame.
+  var WEB_RADIUS = 0;
+
+  // Section 1 is centred at the top; the rest run clockwise from there.
+  function sectionAngle(index) {
+    return index * wedge - Math.PI / 2;
+  }
+
+  // Columns across the wedge, bands outward from the centre. Entry 0 sits
+  // innermost-leftmost, so curriculum order reads inward-out.
+  function slotFor(sectionIndex, order, count) {
+    var cols = Math.min(COLS, count);
+    var band = Math.floor(order / cols);
+    var col = order % cols;
+    var span = wedge - GUTTER;
+    var start = sectionAngle(sectionIndex) - span / 2;
+    var angle = start + ((col + 0.5) / cols) * span;
+    var radius = R0 + band * BAND;
+    return { angle: angle, radius: radius, col: col };
+  }
+
+  sections.forEach(function (s) {
+    var bands = Math.ceil(s.count / Math.min(COLS, s.count));
+    WEB_RADIUS = Math.max(WEB_RADIUS, R0 + (bands - 1) * BAND);
+    s.read = 0;
+    s.seen = 0;
+    var a = sectionAngle(s.index);
+    s.x = Math.cos(a) * HUB_R;
+    s.y = Math.sin(a) * HUB_R;
+    s.angle = a;
+  });
+
   nodes.forEach(function (n, i) {
     n.index = i;
-    n.x = 0;
-    n.y = 0;
-    n.vx = 0;
-    n.vy = 0;
-    n.depth = 0;
+    var section = sections[n.sectionIndex];
+    var slot = slotFor(n.sectionIndex, n.orderInSection, section.count);
+    n.col = slot.col;
+    n.tx = Math.cos(slot.angle) * slot.radius;
+    n.ty = Math.sin(slot.angle) * slot.radius;
+    // Entries fly out from their section hub when revealed.
+    n.x = section.x;
+    n.y = section.y;
     n.visible = false;
     n.read = false;
-    n.shown = 0; // how many of its ranked neighbours have been offered
     byId[n.id] = n;
   });
 
@@ -48,125 +99,62 @@
   });
 
   var active = null;
-  var seed = DATA.seed;
+  var focus = null; // section index whose wedge is highlighted
 
   /* ---------------- reveal ---------------- */
 
-  // --- orb-web layout -------------------------------------------------
-  //
-  // Each ring holds a fixed number of evenly spaced slots. A node claims one
-  // slot the first time it is revealed and keeps it for good: the hub never
-  // moves, and everything already on screen stays exactly where you last saw
-  // it while new entries fill outward. Recomputing the whole layout on every
-  // reveal — which is what this replaced — reshuffled the web each time you
-  // read something, so nothing stayed where you had learned it was.
-
-  function ringRadius(depth) {
-    return depth * RING;
+  function recount() {
+    sections.forEach(function (s) {
+      s.read = 0;
+      s.seen = 0;
+    });
+    nodes.forEach(function (n) {
+      var s = sections[n.sectionIndex];
+      if (n.visible) s.seen++;
+      if (n.read) s.read++;
+    });
   }
 
-  // How many labelled nodes fit around a ring before they collide.
-  function ringCapacity(depth) {
-    return Math.max(6, Math.floor((2 * Math.PI * ringRadius(depth)) / 96));
-  }
-
-  function fract(x) {
-    return x - Math.floor(x);
-  }
-
-  var slots = {}; // depth -> array of node ids, indexed by slot
-
-  function slotAngle(depth, index) {
-    var capacity = ringCapacity(depth);
-    // Alternate rings are offset so spokes stagger rather than line up.
-    var offset = depth % 2 ? Math.PI / capacity : 0;
-    return (index / capacity) * Math.PI * 2 + offset;
-  }
-
-  function angleGap(a, b) {
-    var d = Math.abs(a - b) % (Math.PI * 2);
-    return d > Math.PI ? Math.PI * 2 - d : d;
-  }
-
-  function positionFromSlot(node) {
-    node.angle = slotAngle(node.depth, node.slot);
-    // A little deterministic variation keeps it from looking like a dial.
-    var wobble = 0.95 + 0.11 * fract(node.index * 0.6180339887);
-    var r = ringRadius(node.depth) * wobble;
-    node.tx = Math.cos(node.angle) * r;
-    node.ty = Math.sin(node.angle) * r;
-  }
-
-  function claimSlot(node, depth, index) {
-    if (!slots[depth]) slots[depth] = [];
-    slots[depth][index] = node.id;
-    node.depth = depth;
-    node.slot = index;
-    positionFromSlot(node);
-  }
-
-  // Innermost ring with a free slot, taking the slot nearest the parent so
-  // related entries end up as neighbours on the web.
-  function assignSlot(node, parent) {
-    if (node.id === seed) {
-      node.depth = 0;
-      node.slot = 0;
-      node.angle = 0;
-      node.tx = 0;
-      node.ty = 0;
-      return;
-    }
-    var want = parent && parent.angle !== undefined ? parent.angle : 0;
-    for (var depth = 1; depth <= 14; depth++) {
-      var capacity = ringCapacity(depth);
-      if (!slots[depth]) slots[depth] = [];
-      var best = -1;
-      var bestGap = Infinity;
-      for (var i = 0; i < capacity; i++) {
-        if (slots[depth][i]) continue;
-        var gap = angleGap(slotAngle(depth, i), want);
-        if (gap < bestGap) {
-          bestGap = gap;
-          best = i;
-        }
-      }
-      if (best >= 0) {
-        claimSlot(node, depth, best);
-        return;
-      }
-    }
-  }
-
-  function reveal(node, near) {
+  function reveal(node, from) {
     if (!node || node.visible) return false;
     node.visible = true;
-    assignSlot(node, near);
-    // Spawn on the parent so it visibly travels out to its place on the web.
-    node.x = near ? near.x : node.tx;
-    node.y = near ? near.y : node.ty;
+    var origin = from || sections[node.sectionIndex];
+    node.x = origin.x;
+    node.y = origin.y;
     return true;
   }
 
-  function expand(node) {
+  // Reading an entry pulls in its neighbours, preferring ones from the same
+  // section so a chapter can actually be finished before you wander.
+  function expandFrom(node) {
+    var here = [];
+    var elsewhere = [];
+    node.neighbors.forEach(function (id) {
+      var v = byId[id];
+      if (!v || v.visible) return;
+      (v.sectionIndex === node.sectionIndex ? here : elsewhere).push(v);
+    });
+    var queue = here.concat(elsewhere);
     var added = 0;
-    while (node.shown < node.neighbors.length && added < REVEAL_BATCH) {
-      var next = byId[node.neighbors[node.shown]];
-      node.shown++;
-      if (reveal(next, node)) added++;
+    for (var i = 0; i < queue.length && added < REVEAL_BATCH; i++) {
+      if (reveal(queue[i], node)) added++;
     }
     return added;
   }
 
-  function hiddenCount(node) {
-    var n = 0;
-    for (var i = 0; i < node.neighbors.length; i++) {
-      var v = byId[node.neighbors[i]];
-      if (v && !v.visible) n++;
+  // Selecting a section opens the next of its entries in curriculum order.
+  function revealSection(index, howMany) {
+    var added = 0;
+    for (var i = 0; i < nodes.length && added < howMany; i++) {
+      var n = nodes[i];
+      if (n.sectionIndex === index && !n.visible && reveal(n, null)) added++;
     }
-    return n;
+    return added;
   }
 
   /* ---------------- persistence ---------------- */
+  // Slots come from curriculum order, so only what you have read and what is
+  // on screen needs saving. No positions.
 
   function load() {
     try {
@@ -189,62 +177,36 @@
             .map(function (n) {
               return n.id;
             }),
-          shown: nodes
-            .filter(function (n) {
-              return n.shown > 0;
-            })
-            .map(function (n) {
-              return [n.id, n.shown];
-            }),
-          // Slot per visible node, so a reload rebuilds the identical web.
-          pos: nodes
+          seen: nodes
             .filter(function (n) {
               return n.visible;
             })
             .map(function (n) {
-              return [n.id, n.depth, n.slot];
+              return n.id;
             }),
         })
       );
     } catch (e) {}
   }
 
-  // Rebuild the identical web: every node goes back to the slot it held, so a
-  // reload is indistinguishable from never having left.
   function restore(saved) {
-    (saved.shown || []).forEach(function (pair) {
-      var n = byId[pair[0]];
-      if (n) n.shown = pair[1];
-    });
     (saved.read || []).forEach(function (id) {
       if (byId[id]) byId[id].read = true;
     });
-
-    slots = {};
-    var root = byId[seed];
-    root.visible = true;
-    assignSlot(root, null);
-
-    (saved.pos || []).forEach(function (entry) {
-      var n = byId[entry[0]];
-      if (!n || n.id === seed) return;
-      n.visible = true;
-      claimSlot(n, entry[1], entry[2]);
-    });
-
-    // Older saves, and anything read but missing a slot, get one now.
-    var legacy = saved.seen || saved.read || [];
-    legacy.forEach(function (id) {
+    var seen = saved.seen && saved.seen.length ? saved.seen : saved.read || [];
+    seen.forEach(function (id) {
       var n = byId[id];
-      if (n && !n.visible) {
+      if (n) {
         n.visible = true;
-        assignSlot(n, root);
+        n.x = n.tx;
+        n.y = n.ty;
       }
     });
     nodes.forEach(function (n) {
       if (n.read && !n.visible) {
         n.visible = true;
-        assignSlot(n, root);
+        n.x = n.tx;
+        n.y = n.ty;
       }
     });
   }
@@ -253,6 +215,7 @@
 
   var paneEl = document.getElementById("pane");
   var progressEl = document.getElementById("progress");
+  var legendEl = document.querySelector(".legend");
 
   function relatedList(node) {
     var shown = node.neighbors
@@ -270,7 +233,9 @@
       shown
         .map(function (v) {
           return (
-            '<li><a href="#' +
+            '<li><a class="sec-' +
+            (v.sectionIndex + 1) +
+            '" href="#' +
             v.slug +
             '" data-goto="' +
             v.id +
@@ -288,22 +253,23 @@
 
   function renderPane() {
     if (!active) {
+      var first = sections[0];
       paneEl.innerHTML =
         '<div class="welcome"><h2>' +
         UI.welcomeTitle +
         "</h2><p>" +
         UI.welcomeBody +
-        '</p><p><button type="button" class="start" data-goto="' +
-        seed +
-        '">' +
-        byId[seed].term +
-        " &rarr;</button></p></div>";
+        '</p><p><button type="button" class="start" data-section="0">' +
+        UI.startAction.replace("%section%", first.shortLabel) +
+        "</button></p></div>";
       return;
     }
     paneEl.innerHTML =
       '<article class="entry"><h2>' +
       active.term +
-      '</h2><p class="sect">' +
+      '</h2><p class="sect sec-' +
+      (active.sectionIndex + 1) +
+      '">' +
       active.section +
       "</p>" +
       DATA.entries[active.id] +
@@ -313,31 +279,52 @@
   }
 
   function updateProgress() {
+    recount();
     var read = nodes.filter(function (n) {
       return n.read;
     }).length;
     progressEl.textContent = UI.progress
       .replace("%read%", read)
       .replace("%total%", nodes.length);
+
+    sections.forEach(function (s) {
+      var el = legendEl.querySelector('[data-count="' + s.index + '"]');
+      if (el) el.textContent = s.read + "/" + s.count;
+      var btn = legendEl.querySelector('[data-section="' + s.index + '"]');
+      if (btn) {
+        btn.classList.toggle("done", s.read === s.count);
+        btn.classList.toggle("focused", focus === s.index);
+        btn.setAttribute(
+          "title",
+          s.label + (s.read === s.count ? " — " + UI.sectionDone : "")
+        );
+      }
+    });
   }
 
-  // `opts.grow` is what separates a click from a page load: reopening an entry
-  // deliberately pushes the web out, but restoring one on refresh must not, or
-  // the web would creep outward every time the page is reloaded.
   function open(node, opts) {
     if (!node) return;
     var options = opts || {};
-    if (reveal(node, active)) ensureFits();
+    reveal(node, active);
     node.read = true;
-    if (options.grow !== false && expand(node)) ensureFits();
+    if (options.grow !== false) expandFrom(node);
     active = node;
+    focus = node.sectionIndex;
     renderPane();
     updateProgress();
     save();
     if (options.push !== false && history.replaceState) {
       history.replaceState(null, "", "#" + node.slug);
     }
-    focusOn(node);
+    focusWedge(sections[node.sectionIndex]);
+  }
+
+  function selectSection(index) {
+    focus = index;
+    revealSection(index, REVEAL_BATCH);
+    updateProgress();
+    save();
+    focusWedge(sections[index]);
   }
 
   /* ---------------- canvas ---------------- */
@@ -360,9 +347,11 @@
     canvas.width = Math.round(W * DPR);
     canvas.height = Math.round(H * DPR);
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    if (!targetView) view.k = wholeWebZoom();
   }
 
   var css = {};
+  var SECTION_COLOURS = [];
   function readTheme() {
     var s = getComputedStyle(document.documentElement);
     [
@@ -374,15 +363,45 @@
       "border-strong",
       "bg",
       "bg-raised",
+      "bg-sunken",
     ].forEach(function (k) {
       css[k] = s.getPropertyValue("--" + k).trim();
     });
+    SECTION_COLOURS = sections.map(function (_, i) {
+      return s.getPropertyValue("--sec-" + (i + 1)).trim() || css.accent;
+    });
   }
 
-  function visible() {
-    return nodes.filter(function (n) {
-      return n.visible;
-    });
+  function wholeWebZoom() {
+    return Math.max(
+      0.3,
+      Math.min(1.3, Math.min(W, H) / (2 * (WEB_RADIUS + 74)))
+    );
+  }
+
+  // The whole web, hub centred. The extent is fixed whether or not entries
+  // have been revealed, so this never shifts as you read.
+  function fitToView() {
+    targetView = { x: 0, y: 0, k: wholeWebZoom() };
+  }
+
+  // Move onto one wedge. At whole-web zoom a wedge is ~40px per column, which
+  // is narrower than the terms written in it; framing the wedge is what makes
+  // its labels readable, and it is why selecting a section focuses rather than
+  // merely highlights.
+  function focusWedge(section) {
+    var near = HUB_R;
+    var far = WEB_RADIUS + 46;
+    var mid = (near + far) / 2;
+    var k = Math.max(
+      wholeWebZoom(),
+      Math.min(1.5, Math.min(W, H) / (far - near + 130))
+    );
+    targetView = {
+      x: -Math.cos(section.angle) * mid,
+      y: -Math.sin(section.angle) * mid,
+      k: k,
+    };
   }
 
   function toScreen(p) {
@@ -398,71 +417,22 @@
     };
   }
 
-  // Bigger circles mean more connections, so the hubs read as hubs.
   function radius(n) {
-    var deg = n.neighbors.length;
-    return (4 + Math.sqrt(deg) * 1.15 + (n === active ? 2.5 : 0)) * 1;
+    return 4.5 + Math.sqrt(n.neighbors.length) * 1.0 + (n === active ? 2.5 : 0);
   }
 
-  function outerRadius() {
-    var maxR = RING * 0.6;
-    visible().forEach(function (n) {
-      var tx = n.tx === undefined ? n.x : n.tx;
-      var ty = n.ty === undefined ? n.y : n.ty;
-      maxR = Math.max(maxR, Math.sqrt(tx * tx + ty * ty));
-    });
-    return maxR;
-  }
-
-  // The hub stays dead centre. Only the zoom changes as the web grows, so the
-  // entries you started from never drift out of view.
-  var FIT_PAD = 110;
-
-  function fitToView() {
-    if (!visible().length) return;
-    view.k = Math.max(
-      0.45,
-      Math.min(1.35, Math.min(W, H) / (2 * (outerRadius() + FIT_PAD)))
-    );
-    targetView = { x: 0, y: 0 };
-  }
-
-  // Widen the view only when the web has outgrown it.
-  function ensureFits() {
-    if ((outerRadius() + FIT_PAD) * 2 * view.k > Math.min(W, H)) fitToView();
-  }
-
-  // Never pan to the opened entry: the hub stays centred and the web keeps
-  // its shape. Only widen the view if the entry sits outside it.
-  function focusOn(node) {
-    var p = toScreen(node);
-    var pad = 60;
-    if (p.x > pad && p.x < W - pad && p.y > pad && p.y < H - pad) return;
-    fitToView();
-  }
-
-  /* ---------------- simulation ---------------- */
-
-  var dragging = null;
-
-  // No force simulation any more: positions ease toward the laid-out target,
-  // which keeps the web's shape stable instead of drifting every frame.
   function step() {
-    var vis = visible();
-    for (var i = 0; i < vis.length; i++) {
-      var n = vis[i];
-      if (n === dragging) continue;
-      if (n.tx === undefined) continue;
-      n.x += (n.tx - n.x) * 0.085;
-      n.y += (n.ty - n.y) * 0.085;
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      if (!n.visible || n === dragging) continue;
+      n.x += (n.tx - n.x) * 0.12;
+      n.y += (n.ty - n.y) * 0.12;
     }
   }
 
   /* ---------------- drawing ---------------- */
 
-  // A thread sags toward the middle of the web, the way silk does between
-  // radials, instead of running dead straight.
-  function threadPath(pa, pb, centre) {
+  function threadControl(pa, pb, centre) {
     var mx = (pa.x + pb.x) / 2,
       my = (pa.y + pb.y) / 2;
     var dx = centre.x - mx,
@@ -471,154 +441,214 @@
     var chord = Math.sqrt(
       (pb.x - pa.x) * (pb.x - pa.x) + (pb.y - pa.y) * (pb.y - pa.y)
     );
-    var sag = Math.min(chord * 0.11, 24);
+    var sag = Math.min(chord * 0.1, 20);
     return { cx: mx + (dx / len) * sag, cy: my + (dy / len) * sag };
   }
 
-  function quadAt(pa, c, pb, t) {
-    var u = 1 - t;
-    return {
-      x: u * u * pa.x + 2 * u * t * c.cx + t * t * pb.x,
-      y: u * u * pa.y + 2 * u * t * c.cy + t * t * pb.y,
-    };
+  function dim(sectionIndex) {
+    return focus === null || focus === sectionIndex ? 1 : 0.28;
   }
 
-  function drawRings(centre, vis) {
-    var deepest = 0;
-    vis.forEach(function (n) {
-      deepest = Math.max(deepest, n.depth);
-    });
-    ctx.strokeStyle = css["border-strong"];
-    ctx.globalAlpha = 0.13;
-    ctx.lineWidth = 1;
-    for (var d = 1; d <= deepest; d++) {
+  function drawCentre(centre) {
+    var read = 0;
+    for (var i = 0; i < nodes.length; i++) if (nodes[i].read) read++;
+    var r = 40 * view.k;
+    var done = read === nodes.length;
+
+    ctx.beginPath();
+    ctx.arc(centre.x, centre.y, r, 0, TAU);
+    ctx.strokeStyle = css.border;
+    ctx.lineWidth = 4;
+    ctx.stroke();
+
+    if (read) {
       ctx.beginPath();
-      ctx.arc(centre.x, centre.y, ringRadius(d) * view.k, 0, Math.PI * 2);
+      ctx.arc(
+        centre.x,
+        centre.y,
+        r,
+        -Math.PI / 2,
+        -Math.PI / 2 + TAU * (read / nodes.length)
+      );
+      ctx.strokeStyle = done ? css.accent : css["fg-muted"];
+      ctx.lineWidth = 4;
       ctx.stroke();
     }
-    ctx.globalAlpha = 1;
+    ctx.lineWidth = 1;
+
+    ctx.fillStyle = done ? css.accent : css.fg;
+    ctx.font =
+      "600 " +
+      Math.round(Math.max(11, 13 * view.k)) +
+      "px ui-monospace, SFMono-Regular, Menlo, monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(
+      done ? UI.allDone : read + "/" + nodes.length,
+      centre.x,
+      centre.y
+    );
   }
 
   function draw() {
     ctx.clearRect(0, 0, W, H);
-    var vis = visible();
     var centre = toScreen({ x: 0, y: 0 });
 
-    drawRings(centre, vis);
+    // Wedge backdrops, so the seven neighbourhoods are legible even empty.
+    sections.forEach(function (s) {
+      var span = wedge - GUTTER;
+      var start = s.angle - span / 2;
+      ctx.beginPath();
+      ctx.moveTo(centre.x, centre.y);
+      ctx.arc(
+        centre.x,
+        centre.y,
+        (WEB_RADIUS + 42) * view.k,
+        start,
+        start + span
+      );
+      ctx.closePath();
+      ctx.fillStyle = SECTION_COLOURS[s.index];
+      ctx.globalAlpha = (focus === s.index ? 0.1 : 0.045) * dim(s.index);
+      ctx.fill();
+    });
+    ctx.globalAlpha = 1;
 
-    // threads
-    ctx.lineWidth = 1;
-    for (var i = 0; i < vis.length; i++) {
-      var a = vis[i];
-      var nb = adj[a.id];
-      for (var id in nb) {
+    // Threads. Within-section always; cross-section only where they touch the
+    // entry being read, since those are the ones that make a hairball.
+    for (var i = 0; i < nodes.length; i++) {
+      var a = nodes[i];
+      if (!a.visible) continue;
+      for (var id in adj[a.id]) {
         var b = byId[id];
         if (!b || !b.visible || b.index < a.index) continue;
+        var live = active && (a === active || b === active);
+        var same = a.sectionIndex === b.sectionIndex;
+        if (!same && !live) continue;
         var pa = toScreen(a),
           pb = toScreen(b);
-        var live = active && (a === active || b === active);
-        var c = threadPath(pa, pb, centre);
-        ctx.strokeStyle = live ? css.accent : css["fg-muted"];
-        ctx.globalAlpha = live ? 0.75 : 0.26;
+        var c = threadControl(pa, pb, centre);
+        ctx.strokeStyle = live
+          ? css.accent
+          : SECTION_COLOURS[a.sectionIndex] || css["fg-muted"];
+        ctx.globalAlpha =
+          (live ? 0.7 : 0.3) *
+          Math.min(dim(a.sectionIndex), dim(b.sectionIndex));
         ctx.lineWidth = live ? 1.6 : 1;
         ctx.beginPath();
         ctx.moveTo(pa.x, pa.y);
         ctx.quadraticCurveTo(c.cx, c.cy, pb.x, pb.y);
         ctx.stroke();
-        ctx.lineWidth = 1;
-
-        // Dew on the threads of whatever you are reading.
-        if (live && view.k > 0.5) {
-          ctx.fillStyle = css.accent;
-          ctx.globalAlpha = 0.55;
-          for (var t = 0.25; t < 0.9; t += 0.25) {
-            var q = quadAt(pa, c, pb, t);
-            ctx.beginPath();
-            ctx.arc(q.x, q.y, 1.3, 0, Math.PI * 2);
-            ctx.fill();
-          }
-        }
       }
     }
     ctx.globalAlpha = 1;
+    ctx.lineWidth = 1;
 
-    // nodes
-    for (var n = 0; n < vis.length; n++) {
-      var node = vis[n];
+    drawCentre(centre);
+
+    // Section hubs.
+    sections.forEach(function (s) {
+      var p = toScreen(s);
+      var complete = s.read === s.count;
+      var r = 14 * Math.min(view.k, 1.2);
+      ctx.globalAlpha = dim(s.index);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, TAU);
+      ctx.fillStyle = complete ? SECTION_COLOURS[s.index] : css["bg-raised"];
+      ctx.fill();
+      ctx.strokeStyle = SECTION_COLOURS[s.index];
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.lineWidth = 1;
+
+      ctx.fillStyle = complete ? css.bg : SECTION_COLOURS[s.index];
+      ctx.font = "600 11px ui-monospace, monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(s.index + 1), p.x, p.y + 0.5);
+
+      ctx.fillStyle = css["fg-muted"];
+      ctx.font =
+        Math.round(Math.max(9, 10 * view.k)) +
+        "px ui-monospace, SFMono-Regular, Menlo, monospace";
+      ctx.letterSpacing = "0.08em";
+      ctx.textBaseline = "top";
+      ctx.fillText(s.read + "/" + s.count, p.x, p.y + r + 4);
+      ctx.letterSpacing = "0px";
+      ctx.globalAlpha = 1;
+    });
+
+    // Entries.
+    for (var j = 0; j < nodes.length; j++) {
+      var node = nodes[j];
+      if (!node.visible) continue;
       var p = toScreen(node);
-      var r = radius(node) * Math.min(view.k, 1.35);
+      var r = radius(node) * Math.min(view.k, 1.3);
+      var colour = SECTION_COLOURS[node.sectionIndex] || css.accent;
+      ctx.globalAlpha = dim(node.sectionIndex);
 
       if (node === active) {
         ctx.beginPath();
-        ctx.arc(p.x, p.y, r + 7, 0, Math.PI * 2);
-        ctx.strokeStyle = css.accent;
-        ctx.globalAlpha = 0.45;
+        ctx.arc(p.x, p.y, r + 6, 0, TAU);
+        ctx.strokeStyle = colour;
+        ctx.globalAlpha = 0.45 * dim(node.sectionIndex);
         ctx.lineWidth = 2;
         ctx.stroke();
-        ctx.globalAlpha = 1;
         ctx.lineWidth = 1;
-      }
-
-      if (node.id === seed) {
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, r + 4, 0, Math.PI * 2);
-        ctx.strokeStyle = css["fg-faint"];
-        ctx.globalAlpha = 0.5;
-        ctx.stroke();
-        ctx.globalAlpha = 1;
+        ctx.globalAlpha = dim(node.sectionIndex);
       }
 
       ctx.beginPath();
-      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, r, 0, TAU);
       if (node.read) {
-        ctx.fillStyle = node === active ? css.accent : css["fg-muted"];
+        ctx.fillStyle = colour;
         ctx.fill();
       } else {
         ctx.fillStyle = css["bg-raised"];
         ctx.fill();
-        ctx.strokeStyle = css["fg-faint"];
+        ctx.strokeStyle = colour;
         ctx.lineWidth = 1.5;
         ctx.stroke();
         ctx.lineWidth = 1;
       }
 
-      var hid = hiddenCount(node);
-      if (node.read && hid > 0 && view.k > 0.45) {
-        ctx.beginPath();
-        ctx.arc(p.x + r + 5, p.y - r - 3, 6.5, 0, Math.PI * 2);
-        ctx.fillStyle = css["bg-raised"];
-        ctx.fill();
-        ctx.strokeStyle = css.border;
-        ctx.stroke();
-        ctx.fillStyle = css["fg-muted"];
-        ctx.font = "9px ui-monospace, monospace";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(String(hid), p.x + r + 5, p.y - r - 2.5);
-      }
-
-      if (node === active || node.read || view.k > 0.78) {
+      // Label only what can actually be read: the open entry, and read
+      // entries in the wedge you are working in. Everything else waits for
+      // zoom. Columns alternate above/below so neighbours never collide.
+      var labelled =
+        node === active ||
+        view.k > 0.95 ||
+        (node.read && (focus === null || focus === node.sectionIndex));
+      if (labelled) {
         ctx.font =
           (node === active ? "600 " : "") +
           Math.round(Math.max(9, 10 * Math.min(view.k, 1.2))) +
           "px ui-monospace, SFMono-Regular, Menlo, monospace";
-        ctx.letterSpacing = "0.09em";
+        ctx.letterSpacing = "0.08em";
         ctx.fillStyle = node === active ? css.fg : css["fg-muted"];
         ctx.textAlign = "center";
-        ctx.textBaseline = "top";
-        ctx.fillText(node.term.toUpperCase(), p.x, p.y + r + 5);
+        var above = node.col % 2 === 1;
+        ctx.textBaseline = above ? "bottom" : "top";
+        ctx.fillText(
+          node.term.toUpperCase(),
+          p.x,
+          above ? p.y - r - 4 : p.y + r + 4
+        );
         ctx.letterSpacing = "0px";
       }
+      ctx.globalAlpha = 1;
     }
   }
 
   function frame() {
     if (targetView) {
-      view.x += (targetView.x - view.x) * 0.12;
-      view.y += (targetView.y - view.y) * 0.12;
+      view.x += (targetView.x - view.x) * 0.1;
+      view.y += (targetView.y - view.y) * 0.1;
+      if (targetView.k) view.k += (targetView.k - view.k) * 0.1;
       if (
         Math.abs(targetView.x - view.x) < 0.5 &&
-        Math.abs(targetView.y - view.y) < 0.5
+        Math.abs(targetView.y - view.y) < 0.5 &&
+        (!targetView.k || Math.abs(targetView.k - view.k) < 0.005)
       )
         targetView = null;
     }
@@ -629,7 +659,8 @@
 
   /* ---------------- interaction ---------------- */
 
-  var panning = false,
+  var dragging = null,
+    panning = false,
     last = null,
     moved = 0;
 
@@ -637,24 +668,32 @@
     var w = toWorld(sx, sy);
     var best = null,
       bestD = Infinity;
-    visible().forEach(function (n) {
-      var dx = n.x - w.x,
-        dy = n.y - w.y;
-      var d = Math.sqrt(dx * dx + dy * dy);
+    nodes.forEach(function (n) {
+      if (!n.visible) return;
+      var d = Math.sqrt((n.x - w.x) * (n.x - w.x) + (n.y - w.y) * (n.y - w.y));
       if (d < (radius(n) + 12) / view.k && d < bestD) {
         best = n;
         bestD = d;
       }
     });
-    return best;
+    if (best) return { node: best };
+    var bestSection = null;
+    sections.forEach(function (s) {
+      var d = Math.sqrt((s.x - w.x) * (s.x - w.x) + (s.y - w.y) * (s.y - w.y));
+      if (d < 26 / view.k && d < bestD) {
+        bestSection = s;
+        bestD = d;
+      }
+    });
+    return bestSection ? { section: bestSection } : null;
   }
 
   canvas.addEventListener("pointerdown", function (ev) {
     canvas.setPointerCapture(ev.pointerId);
     last = { x: ev.offsetX, y: ev.offsetY };
     moved = 0;
-    var n = hit(ev.offsetX, ev.offsetY);
-    if (n) dragging = n;
+    var h = hit(ev.offsetX, ev.offsetY);
+    if (h && h.node) dragging = h.node;
     else panning = true;
   });
 
@@ -669,8 +708,6 @@
     if (dragging) {
       dragging.x += dx / view.k;
       dragging.y += dy / view.k;
-      dragging.vx = 0;
-      dragging.vy = 0;
     } else if (panning) {
       view.x += dx / view.k;
       view.y += dy / view.k;
@@ -679,8 +716,12 @@
     last = { x: ev.offsetX, y: ev.offsetY };
   });
 
-  canvas.addEventListener("pointerup", function () {
-    if (dragging && moved < 5) open(dragging);
+  canvas.addEventListener("pointerup", function (ev) {
+    if (moved < 5) {
+      var h = hit(ev.offsetX, ev.offsetY);
+      if (h && h.node) open(h.node);
+      else if (h && h.section) selectSection(h.section.index);
+    }
     dragging = null;
     panning = false;
     last = null;
@@ -693,7 +734,7 @@
       var before = toWorld(ev.offsetX, ev.offsetY);
       view.k = Math.max(
         0.3,
-        Math.min(2.6, view.k * Math.exp(-ev.deltaY * 0.0015))
+        Math.min(2.4, view.k * Math.exp(-ev.deltaY * 0.0015))
       );
       var after = toWorld(ev.offsetX, ev.offsetY);
       view.x += after.x - before.x;
@@ -705,7 +746,7 @@
 
   paneEl.addEventListener("click", function (ev) {
     var a = ev.target.closest("a[href^='#']");
-    if (!a) return;
+    if (!a || a.hasAttribute("data-goto")) return;
     var slug = a.getAttribute("href").slice(1);
     var target = nodes.filter(function (n) {
       return n.slug === slug;
@@ -737,7 +778,9 @@
       ? hits
           .map(function (n) {
             return (
-              '<li><button type="button" data-goto="' +
+              '<li><button type="button" class="sec-' +
+              (n.sectionIndex + 1) +
+              '" data-goto="' +
               n.id +
               '">' +
               n.term +
@@ -749,12 +792,19 @@
   });
 
   document.addEventListener("click", function (ev) {
-    var el = ev.target.closest("[data-goto]");
-    if (!el) return;
-    ev.preventDefault();
-    open(byId[el.getAttribute("data-goto")]);
-    resultsEl.hidden = true;
-    searchEl.value = "";
+    var go = ev.target.closest("[data-goto]");
+    if (go) {
+      ev.preventDefault();
+      open(byId[go.getAttribute("data-goto")]);
+      resultsEl.hidden = true;
+      searchEl.value = "";
+      return;
+    }
+    var sec = ev.target.closest("[data-section]");
+    if (sec) {
+      ev.preventDefault();
+      selectSection(Number(sec.getAttribute("data-section")));
+    }
   });
 
   document.getElementById("reset").addEventListener("click", function () {
@@ -765,23 +815,23 @@
     nodes.forEach(function (n) {
       n.visible = false;
       n.read = false;
-      n.shown = 0;
-      n.depth = 0;
+      n.x = sections[n.sectionIndex].x;
+      n.y = sections[n.sectionIndex].y;
     });
     active = null;
-    view = { x: 0, y: 0, k: 1 };
-    targetView = null;
-    slots = {};
-    assignSlot(byId[seed], null);
-    byId[seed].visible = true;
-    byId[seed].x = 0;
-    byId[seed].y = 0;
+    focus = null;
+    fitToView();
     if (history.replaceState) history.replaceState(null, "", location.pathname);
     renderPane();
     updateProgress();
   });
 
-  document.getElementById("recenter").addEventListener("click", fitToView);
+  // Back out to the whole web — the seven wedges and where you are in each.
+  document.getElementById("recenter").addEventListener("click", function () {
+    focus = null;
+    fitToView();
+    updateProgress();
+  });
 
   var themeBtn = document.querySelector(".theme-btn");
   if (themeBtn)
@@ -791,35 +841,16 @@
   var mq = window.matchMedia("(prefers-color-scheme: dark)");
   if (mq.addEventListener) mq.addEventListener("change", readTheme);
   window.addEventListener("resize", resize);
-  // The pane can change size without the window doing so — the language notice
-  // appearing, for one — and a stale bitmap distorts everything drawn into it.
-  if (window.ResizeObserver) {
-    new ResizeObserver(function () {
-      resize();
-      ensureFits();
-    }).observe(canvas);
-  }
+  if (window.ResizeObserver) new ResizeObserver(resize).observe(canvas);
 
   /* ---------------- boot ---------------- */
 
   readTheme();
   resize();
+  view.k = wholeWebZoom();
 
   var saved = load();
-  if (saved) {
-    restore(saved);
-    // Snap straight onto the laid-out web, so a refresh shows the shape you
-    // left rather than an animation of it assembling itself.
-    visible().forEach(function (n) {
-      n.x = n.tx;
-      n.y = n.ty;
-    });
-  } else {
-    byId[seed].visible = true;
-    assignSlot(byId[seed], null);
-    byId[seed].x = 0;
-    byId[seed].y = 0;
-  }
+  if (saved) restore(saved);
 
   var fromHash = location.hash
     ? nodes.filter(function (n) {
@@ -827,14 +858,11 @@
       })[0]
     : null;
 
-  if (fromHash) {
-    // Restoring, not clicking: must not grow the web.
-    open(fromHash, { grow: false, push: false });
-  } else {
+  if (fromHash) open(fromHash, { grow: false, push: false });
+  else {
     renderPane();
     updateProgress();
   }
-  if (saved) fitToView();
 
   frame();
 })();

@@ -57,6 +57,14 @@ export type Locale = {
     /** Marks an entry the reader has already opened. */
     read: string;
     recenter: string;
+    /** Heading above the section legend. */
+    legend: string;
+    /** Welcome action. %section% is replaced with the first section's name. */
+    startAction: string;
+    /** Marks a section whose entries have all been read. */
+    sectionDone: string;
+    /** Shown in the centre when every entry has been read. */
+    allDone: string;
     /** Shown to readers without JavaScript. */
     noscript: string;
     /** Header byline, followed by a link to Matt Pocock. */
@@ -114,6 +122,10 @@ export const LOCALES: Locale[] = [
       related: "Connects to",
       read: "read",
       recenter: "Recenter",
+      legend: "Sections",
+      startAction: "Start with %section%",
+      sectionDone: "done",
+      allDone: "All read",
       noscript:
         "This view needs JavaScript. The full dictionary is readable as a single page in the Reference.",
       creditBy: "Dictionary by",
@@ -163,6 +175,10 @@ export const LOCALES: Locale[] = [
       related: "Conecta com",
       read: "lida",
       recenter: "Recentralizar",
+      legend: "Seções",
+      startAction: "Começar por %section%",
+      sectionDone: "concluída",
+      allDone: "Tudo lido",
       noscript:
         "Esta visualização precisa de JavaScript. O dicionário completo pode ser lido em página única na Referência.",
       creditBy: "Dicionário de",
